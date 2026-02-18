@@ -50,24 +50,22 @@ deterministic runtime environments.
 ## 📁 Repository Structure
 
 ```
-
 .github/workflows/    CI pipelines (tests, Argo template deploy)
 argo/                 Argo workflow templates
 scripts/              environment & build helper scripts
 trading_runtime/      Python runtime entrypoints
 tests/                deterministic test data & validation
-
 ```
 
 ### Key runtime modules
 
 ```
-
 trading_runtime/local/         Local execution mode
 trading_runtime/argo/          Argo workflow entrypoints
 trading_runtime/strategies/    Example strategies
+```
 
-````
+---
 
 ## 📌 Dependency Pinning & Reproducibility
 
@@ -77,7 +75,7 @@ Create a `.env` file:
 
 ```bash
 TRADING_PLATFORM_COMMIT=<commit-sha>
-````
+```
 
 Generate reproducible environments:
 
