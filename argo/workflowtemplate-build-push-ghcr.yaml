@@ -1,0 +1,82 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ClusterWorkflowTemplate
+metadata:
+  name: build-push-ghcr
+spec:
+  entrypoint: build
+  arguments:
+    parameters:
+      - name: image_repo
+        value: ghcr.io/trading-engineering/trading-runtime
+
+      - name: git_branch
+        description: "Branch name (for tagging only)"
+        value: main
+
+      - name: trading_runtime_commit
+        description: "Exact commit SHA of trading-runtime"
+        value: ""
+
+      - name: trading_platform_commit
+        description: "Exact commit SHA of trading-platform"
+        value: ""
+
+  templates:
+    - name: build
+      script:
+        image: gcr.io/kaniko-project/executor:debug
+        command: ["/busybox/sh"]
+        source: |
+          set -euo pipefail
+
+          IMAGE_REPO="{{workflow.parameters.image_repo}}"
+          GIT_BRANCH="{{workflow.parameters.git_branch}}"
+          RUNTIME_COMMIT="{{workflow.parameters.trading_runtime_commit}}"
+          PLATFORM_COMMIT="{{workflow.parameters.trading_platform_commit}}"
+
+          if [ -z "$RUNTIME_COMMIT" ] || [ -z "$PLATFORM_COMMIT" ]; then
+            echo "Both trading_runtime_commit and trading_platform_commit must be set"
+            exit 1
+          fi
+
+          GIT_REPO="github.com/${IMAGE_REPO#ghcr.io/}"
+
+          SAFE_BRANCH=$(echo "$GIT_BRANCH" | tr '/' '-' | tr '[:upper:]' '[:lower:]')
+
+          TAGS="$IMAGE_REPO:$SAFE_BRANCH $IMAGE_REPO:$RUNTIME_COMMIT"
+
+          if [ "$GIT_BRANCH" = "main" ]; then
+            TAGS="$TAGS $IMAGE_REPO:latest"
+          fi
+
+          DESTINATIONS=""
+          for TAG in $TAGS; do
+            DESTINATIONS="$DESTINATIONS --destination=$TAG"
+          done
+
+          /kaniko/executor \
+            --context=git://$GIT_REPO.git#$RUNTIME_COMMIT \
+            --dockerfile=Dockerfile \
+            --target=runtime \
+            $DESTINATIONS \
+            --build-arg=TRADING_PLATFORM_COMMIT=$PLATFORM_COMMIT \
+            --build-arg=GIT_BRANCH=$GIT_BRANCH \
+            --build-arg=GIT_COMMIT=$RUNTIME_COMMIT \
+            --build-arg=GIT_DIRTY=0 \
+            --cache=true \
+            --cache-repo=$IMAGE_REPO-cache
+
+        volumeMounts:
+          - name: docker-config
+            mountPath: /kaniko/.docker
+        securityContext:
+          runAsUser: 0
+          runAsNonRoot: false
+
+      volumes:
+        - name: docker-config
+          secret:
+            secretName: ghcr-secret
+            items:
+              - key: .dockerconfigjson
+                path: config.json

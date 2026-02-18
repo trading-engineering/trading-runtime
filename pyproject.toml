@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trading-runtime"
+version = "0.1.0"
+description = "Trading runtime."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "tradingeng@protonmail.com" }]
+license = { text = "MIT" }
+
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent"
+]
+
+dependencies = [
+  "trading-platform",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=9,<10",
+  "import-linter>=1.11,<2",
+  "ruff>=0.4,<1",
+  "mypy>=1.9,<2",
+]
+
+# --------------------------------------------------
+# Explicit package discovery
+# --------------------------------------------------
+[tool.setuptools.packages.find]
+include = ["trading_runtime*"]
+
+# --------------------------------------------------
+# Pytest
+# --------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "9.0"
+addopts = "-ra"
+testpaths = ["tests"]
+
+# --------------------------------------------------
+# Ruff
+# --------------------------------------------------
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]
+
+# --------------------------------------------------
+# MyPy (static typing)
+# --------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+ignore_missing_imports = true
+pretty = true
+show_error_codes = true
+ignore_errors = true
+
+# --------------------------------------------------
+# Import Linter
+# --------------------------------------------------
+[tool.importlinter]
+root_package = "trading_runtime"
+include_external_packages = true
