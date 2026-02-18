@@ -34,10 +34,6 @@ jobs:
 
       - name: Apply secrets
         run: |
-          sudo microk8s kubectl -n $K8S_NAMESPACE create secret generic github-git-creds \
-            --from-literal=token=${{ secrets.GITHUB_TOKEN }} \
-            --dry-run=client -o yaml | sudo microk8s kubectl apply -f -
-
           sudo microk8s kubectl -n $K8S_NAMESPACE create secret docker-registry ghcr-secret \
             --docker-server=ghcr.io \
             --docker-username=git \
