@@ -30,6 +30,9 @@ jobs:
       - name: Run full check suite (source)
         run: ./scripts/check.sh
 
+      - name: Install build tooling
+        run: pip install build
+
       - name: Build wheel
         run: python -m build
 
