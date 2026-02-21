@@ -302,6 +302,5 @@ spec:
 
   volumes:
     - name: scratch
-      hostPath:
-        path: /mnt/scratch
-        type: Directory
+      persistentVolumeClaim:
+        claimName: scratch-pvc
