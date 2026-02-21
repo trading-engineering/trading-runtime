@@ -92,13 +92,23 @@ jobs:
 
       - name: Wait for Argo build workflow to succeed
         run: |
+          set -x
+          set -e
+
           BUILD_NAME="${{ steps.submit_build.outputs.build_name }}"
           NS="${{ needs.resolve-context.outputs.namespace }}"
 
           echo "Waiting for workflow $BUILD_NAME in namespace $NS..."
 
-          for i in {1..240}; do
-            PHASE=$(sudo microk8s kubectl -n "$NS" get wf "$BUILD_NAME" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+          sudo microk8s kubectl -n "$NS" get wf "$BUILD_NAME" -o yaml
+
+          for i in {1..60}; do
+            echo "Checking phase..."
+            sudo microk8s kubectl -n "$NS" get wf "$BUILD_NAME" -o yaml
+
+            PHASE=$(sudo microk8s kubectl -n "$NS" get wf "$BUILD_NAME" -o jsonpath='{.status.phase}')
+
+            echo "Current phase: $PHASE"
 
             if [[ "$PHASE" == "Succeeded" ]]; then
               echo "Build succeeded."
@@ -106,15 +116,15 @@ jobs:
             fi
 
             if [[ "$PHASE" == "Failed" || "$PHASE" == "Error" ]]; then
-              echo "Build ended with phase: $PHASE"
-              sudo microk8s kubectl -n "$NS" get wf "$BUILD_NAME" -o yaml || true
+              echo "Build failed."
+              sudo microk8s kubectl -n "$NS" describe wf "$BUILD_NAME"
               exit 1
             fi
 
             sleep 10
           done
 
-          echo "Timed out waiting for build workflow to finish."
+          echo "Timeout reached."
           exit 1
 
       - name: Submit Argo backtest workflow
