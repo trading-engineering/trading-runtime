@@ -1,26 +1,18 @@
 {
-  "name": "trading-runtime devcontainer",
-  "dockerComposeFile": [
-    "../docker-compose.yaml",
-    "../docker-compose.override.yaml"
-  ],
-  "service": "app",
-  "workspaceFolder": "/workspace/trading-runtime",
-  "remoteUser": "root",
+  "name": "Trading Runtime Dev",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+
+  "postCreateCommand": "./scripts/post-create.sh",
+
   "customizations": {
     "vscode": {
-      "settings": {
-        "python.defaultInterpreterPath": "/opt/venv/bin/python",
-        "python.testing.pytestEnabled": true,
-        "python.testing.pytestArgs": [
-          "tests"
-        ]
-      },
       "extensions": [
         "ms-python.python",
         "ms-python.debugpy"
       ]
     }
-  },
-  "postCreateCommand": "/bin/bash scripts/post-create.sh"
+  }
 }
