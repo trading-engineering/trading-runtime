@@ -37,6 +37,15 @@ dev = [
 include = ["trading_runtime*"]
 
 # --------------------------------------------------
+# Include runtime assets
+# --------------------------------------------------
+[tool.setuptools.package-data]
+trading_runtime = ["**/*"]
+
+[tool.setuptools]
+include-package-data = true
+
+# --------------------------------------------------
 # Pytest
 # --------------------------------------------------
 [tool.pytest.ini_options]
