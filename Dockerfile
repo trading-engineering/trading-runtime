@@ -1,10 +1,4 @@
 # ==================================================
-# Global build arguments
-# ==================================================
-ARG TRADING_RUNTIME_COMMIT
-
-
-# ==================================================
 # Dependency + test stage
 # ==================================================
 FROM python:3.11.14-slim-trixie AS build
@@ -26,12 +20,11 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies first (maximizes Docker cache)
-COPY requirements.txt .
-COPY requirements-dev.txt .
+COPY requirements.txt requirements-dev.txt .
 
-RUN pip install --upgrade pip && \
-    pip install --prefix=/install -r requirements.txt && \
-    pip install --prefix=/install -r requirements-dev.txt
+RUN pip install --upgrade pip \
+ && pip install --prefix=/install -r requirements.txt \
+ && pip install --prefix=/install-dev -r requirements-dev.txt
 
 # Copy project files
 COPY pyproject.toml .
@@ -43,6 +36,7 @@ COPY tests/ tests/
 RUN pip install --prefix=/install .
 
 # Run test & quality checks
+ENV PYTHONPATH="/install/lib/python3.11/site-packages:/install-dev/lib/python3.11/site-packages"
 RUN chmod +x check.sh && ./check.sh
 
 
@@ -71,9 +65,6 @@ RUN adduser --disabled-password --gecos '' appuser
 
 # Copy only installed Python artifacts from build stage
 COPY --from=build /install /usr/local
-
-# Application directory (mostly symbolic now — no source code needed)
-WORKDIR /app
 
 # Drop privileges
 USER appuser
