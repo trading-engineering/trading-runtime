@@ -50,6 +50,13 @@ jobs:
           sudo microk8s kubectl get ns "${{ needs.resolve-context.outputs.namespace }}" || \
           sudo microk8s kubectl create ns "${{ needs.resolve-context.outputs.namespace }}"
 
+      - name: Ensure Argo service account exists
+        run: |
+          sudo microk8s kubectl create serviceaccount argo-workflow-sa \
+            -n "${{ needs.resolve-context.outputs.namespace }}" \
+            --dry-run=client -o yaml | \
+          sudo microk8s kubectl apply -f -
+
       - name: Apply GHCR credentials
         run: |
           sudo microk8s kubectl -n "${{ needs.resolve-context.outputs.namespace }}" create secret docker-registry ghcr-secret \
