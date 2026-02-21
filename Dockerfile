@@ -6,7 +6,7 @@ FROM python:3.11.14-slim-trixie AS build
 ARG TRADING_RUNTIME_COMMIT
 
 ENV TRADING_RUNTIME_COMMIT=${TRADING_RUNTIME_COMMIT}
-ENV PATH="/install/bin:${PATH}"
+ENV PATH="/install/bin:/install-dev/bin:${PATH}"
 ENV PYTHONPATH="/install/lib/python3.11/site-packages"
 
 WORKDIR /workspaces/trading-runtime
