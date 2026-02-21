@@ -140,6 +140,6 @@ jobs:
           export IMAGE_TAG="${GITHUB_SHA}"
 
           envsubst < argo/run-backtest.yaml | \
-          sudo microk8s kubectl -n "${{ needs.resolve-context.outputs.namespace }}" apply -f -
+          sudo microk8s kubectl -n "${{ needs.resolve-context.outputs.namespace }}" create -f -
 
           echo "Submitted backtest workflow in namespace: ${{ needs.resolve-context.outputs.namespace }}"
