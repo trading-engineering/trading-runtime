@@ -1,0 +1,129 @@
+name: Build Image and Run Argo Backtest
+
+on:
+  push:
+    branches:
+      - main
+      - "**"
+  workflow_dispatch:
+    inputs:
+      run_backtest:
+        description: "Run backtest after image build"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+jobs:
+  resolve-context:
+    runs-on: self-hosted
+    outputs:
+      namespace: ${{ steps.context.outputs.namespace }}
+      branch: ${{ steps.context.outputs.branch }}
+
+    steps:
+      - name: Resolve deployment context
+        id: context
+        run: |
+          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+
+          if [[ "$BRANCH_NAME" == "main" ]]; then
+            NAMESPACE="prod"
+          else
+            NAMESPACE="dev"
+          fi
+
+          echo "namespace=$NAMESPACE" >> "$GITHUB_OUTPUT"
+          echo "branch=$BRANCH_NAME" >> "$GITHUB_OUTPUT"
+
+  deploy-argo-resources:
+    runs-on: self-hosted
+    needs: resolve-context
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure namespace exists
+        run: |
+          sudo microk8s kubectl get ns "${{ needs.resolve-context.outputs.namespace }}" || \
+          sudo microk8s kubectl create ns "${{ needs.resolve-context.outputs.namespace }}"
+
+      - name: Apply GHCR credentials
+        run: |
+          sudo microk8s kubectl -n "${{ needs.resolve-context.outputs.namespace }}" create secret docker-registry ghcr-secret \
+            --docker-server=ghcr.io \
+            --docker-username=git \
+            --docker-password=${{ secrets.GHCR_TOKEN }} \
+            --dry-run=client -o yaml | \
+          sudo microk8s kubectl -n "${{ needs.resolve-context.outputs.namespace }}" apply -f -
+
+      - name: Apply Argo WorkflowTemplates
+        run: |
+          sudo microk8s kubectl -n "${{ needs.resolve-context.outputs.namespace }}" apply \
+            -f argo/workflowtemplate-build-push-ghcr.yaml \
+            -f argo/workflowtemplate-backtest-fanout.yaml
+
+  build-and-backtest:
+    runs-on: self-hosted
+    needs:
+      - resolve-context
+      - deploy-argo-resources
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Submit Argo build workflow
+        id: submit_build
+        run: |
+          export RUNTIME_COMMIT="${GITHUB_SHA}"
+          export PLATFORM_COMMIT="${GITHUB_SHA}"
+          export GIT_BRANCH="${{ needs.resolve-context.outputs.branch }}"
+
+          BUILD_NAME=$(
+            envsubst < argo/run-build.yaml | \
+            sudo microk8s kubectl -n "${{ needs.resolve-context.outputs.namespace }}" create -f - -o jsonpath='{.metadata.name}'
+          )
+
+          echo "build_name=$BUILD_NAME" >> "$GITHUB_OUTPUT"
+          echo "Submitted build workflow: $BUILD_NAME"
+
+      - name: Wait for Argo build workflow to succeed
+        run: |
+          BUILD_NAME="${{ steps.submit_build.outputs.build_name }}"
+          NS="${{ needs.resolve-context.outputs.namespace }}"
+
+          echo "Waiting for workflow $BUILD_NAME in namespace $NS..."
+
+          for i in {1..240}; do
+            PHASE=$(sudo microk8s kubectl -n "$NS" get wf "$BUILD_NAME" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+
+            if [[ "$PHASE" == "Succeeded" ]]; then
+              echo "Build succeeded."
+              exit 0
+            fi
+
+            if [[ "$PHASE" == "Failed" || "$PHASE" == "Error" ]]; then
+              echo "Build ended with phase: $PHASE"
+              sudo microk8s kubectl -n "$NS" get wf "$BUILD_NAME" -o yaml || true
+              exit 1
+            fi
+
+            sleep 10
+          done
+
+          echo "Timed out waiting for build workflow to finish."
+          exit 1
+
+      - name: Submit Argo backtest workflow
+        if: ${{ needs.resolve-context.outputs.branch == 'main' || github.event.inputs.run_backtest == 'true' }}
+        run: |
+          export IMAGE_TAG="${GITHUB_SHA}"
+
+          envsubst < argo/run-backtest.yaml | \
+          sudo microk8s kubectl -n "${{ needs.resolve-context.outputs.namespace }}" apply -f -
+
+          echo "Submitted backtest workflow in namespace: ${{ needs.resolve-context.outputs.namespace }}"

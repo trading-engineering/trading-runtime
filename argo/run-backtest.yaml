@@ -1,0 +1,17 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: backtest-fanout-
+spec:
+  workflowTemplateRef:
+    name: backtest-fanout
+  arguments:
+    parameters:
+      - name: image_repo
+        value: "ghcr.io/trading-engineering/trading-runtime"
+      - name: image_tag
+        value: "${IMAGE_TAG}"
+      - name: experiment_config
+        value: "/usr/local/lib/python3.11/site-packages/trading_runtime/argo/argo.json"
+      - name: scratch_root
+        value: "/mnt/scratch"
