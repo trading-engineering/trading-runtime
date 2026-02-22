@@ -118,6 +118,20 @@ tests/data/results/
 
 ---
 
+## ⚙️ Infrastructure Requirements
+
+The Argo-based workflows require:
+
+- A self-hosted GitHub Actions runner
+- microk8s Kubernetes distribution (with sudo access)
+- Argo Workflows installed in the cluster
+- GitHub Container Registry access (GHCR_TOKEN secret)
+
+GitHub-hosted runners are only used for unit tests.
+All Kubernetes orchestration runs on self-hosted infrastructure.
+
+---
+
 ## ☸ Kubernetes & Argo Workflows
 
 This runtime is designed for Kubernetes-native execution using Argo Workflows.
