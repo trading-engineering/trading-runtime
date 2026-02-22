@@ -2,8 +2,7 @@ name: Build Image and Run Argo Backtest
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
     inputs:
       run_backtest:

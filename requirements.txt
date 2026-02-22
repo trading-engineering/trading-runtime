@@ -328,7 +328,7 @@ tqdm==4.67.3
     # via
     #   panel
     #   trading-platform
-trading-platform @ git+https://github.com/trading-engineering/trading-platform.git@afde290d6e5b9e1d47ae03e7ac6c2d03b250ae7f
+trading-platform @ git+https://github.com/trading-engineering/trading-platform.git@e21137d3d2b1414b4d407f13e654f313eedd66cd
     # via
     #   -r _git_deps.in
     #   trading-runtime (pyproject.toml)
