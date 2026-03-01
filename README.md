@@ -5,8 +5,7 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 Runtime execution layer and orchestration environment for the
-[trading-framework](https://github.com/trading-engineering/trading-framework)
-framework.
+[trading-framework](https://github.com/trading-engineering/trading-framework).
 
 This repository provides:
 
@@ -38,7 +37,7 @@ It intentionally contains no domain framework logic.
 
 ```
 trading-framework  → core framework, backtesting engine, domain logic
-trading-runtime   → executing entrypoints, runtime configs, orchestration
+trading-runtime    → executing entrypoints, runtime configs, orchestration
 ```
 
 The framework is consumed as a pinned Git dependency to guarantee
