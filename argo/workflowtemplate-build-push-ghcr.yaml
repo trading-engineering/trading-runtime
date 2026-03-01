@@ -17,10 +17,6 @@ spec:
         description: "Exact commit SHA of trading-runtime"
         value: ""
 
-      - name: trading_platform_commit
-        description: "Exact commit SHA of trading-platform"
-        value: ""
-
   templates:
     - name: build
       script:
@@ -32,10 +28,9 @@ spec:
           IMAGE_REPO="{{workflow.parameters.image_repo}}"
           GIT_BRANCH="{{workflow.parameters.git_branch}}"
           RUNTIME_COMMIT="{{workflow.parameters.trading_runtime_commit}}"
-          PLATFORM_COMMIT="{{workflow.parameters.trading_platform_commit}}"
 
-          if [ -z "$RUNTIME_COMMIT" ] || [ -z "$PLATFORM_COMMIT" ]; then
-            echo "Both trading_runtime_commit and trading_platform_commit must be set"
+          if [ -z "$RUNTIME_COMMIT" ]; then
+            echo "> trading_runtime_commit must be set"
             exit 1
           fi
 
@@ -59,7 +54,6 @@ spec:
             --dockerfile=Dockerfile \
             --target=runtime \
             $DESTINATIONS \
-            --build-arg=TRADING_PLATFORM_COMMIT=$PLATFORM_COMMIT \
             --build-arg=GIT_BRANCH=$GIT_BRANCH \
             --build-arg=GIT_COMMIT=$RUNTIME_COMMIT \
             --build-arg=GIT_DIRTY=0 \

@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from trading_platform import BacktestResult
+    from trading_framework import BacktestResult
 
-from trading_platform import (
+from trading_framework import (
     HftBacktestConfig,
     HftBacktestEngine,
     HftEngineConfig,
