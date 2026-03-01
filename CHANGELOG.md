@@ -1,60 +1,57 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
-
-The format is based on Keep a Changelog
-and this project adheres to Semantic Versioning.
+This project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-02-17
+## [0.1.0] – 2026-02-17
 
-Initial public release of the trading platform backtest core.
+Initial public release of the trading-runtime execution and orchestration layer.
 
 ### Added
 
-#### Core Domain
-- Explicit order state machine
-- Structured domain types and reject reasons
-- Slot-based order tracking
-- Event bus and event sink abstractions
-- JSON schema validation for domain events
+#### Runtime Execution
 
-#### Risk Layer
-- Configurable risk engine
-- Risk constraint enforcement
-- Deterministic risk gating before execution
+- Local deterministic backtest entrypoint
+- Argo workflow execution entrypoints
+- Structured runtime configuration model
+- Strategy execution adapters
 
-#### Backtest Layer
-- Integration with [hftbacktest](https://github.com/nkaz001/hftbacktest)
-- Strategy runner abstraction
-- Venue adapter interface
-- Deterministic event processing pipeline
+#### Dependency Management
 
-#### Orchestration
-- Segment-based execution model
-- Parameter sweep runtime
-- Experiment and segment entrypoints
-- Prometheus metrics integration
-- MLflow-compatible logging hooks
+- Commit-pinned `trading-framework` integration
+- Reproducible dependency compilation via pip-tools
+- Environment bootstrap scripts
 
-#### Execution Modes
-- Fully local execution example
-- Cloud-native runtime entrypoints
-- S3-compatible storage adapter
+#### Containerization
 
-#### Strategy Framework
-- Base strategy interface
-- Structured strategy configuration
+- Deterministic Docker runtime image
+- GHCR push workflow template
+- Immutable runtime environment definition
 
-#### Testing
-- Semantic invariant test suite
-- Order state transition validation
-- Queue dominance rules
-- Risk constraint validation
-- Schema conformance tests
+#### Kubernetes & Orchestration
+
+- Argo WorkflowTemplates for:
+  - Image build & push
+  - Backtest orchestration
+- microk8s-compatible deployment model
+- Namespace-based secret management for GHCR
+
+#### CI & Infrastructure
+
+- GitHub-hosted test workflow
+- Self-hosted runner for Kubernetes deployment
+- Automated Argo template deployment pipeline
+
+#### Reproducibility
+
+- Synthetic deterministic test datasets
+- Result artifact validation structure
+- Environment parity between local and cluster execution
 
 #### Tooling
-- Dev container configuration
-- Development validation scripts
-- Dependency compilation helper
+
+- Dev container bootstrap
+- Validation helpers
+- Dependency compilation script

@@ -99,7 +99,7 @@ gunicorn==23.0.0
 h11==0.16.0
     # via uvicorn
 hftbacktest==2.4.4
-    # via trading-platform
+    # via trading-framework
 holoviews==1.22.1
     # via hftbacktest
 huey==2.6.0
@@ -125,7 +125,7 @@ jinja2==3.1.6
 joblib==1.5.3
     # via scikit-learn
 jsonschema==4.26.0
-    # via trading-platform
+    # via trading-framework
 jsonschema-specifications==2025.9.1
     # via jsonschema
 kiwisolver==1.4.9
@@ -159,7 +159,7 @@ mdit-py-plugins==0.5.0
 mdurl==0.1.2
     # via markdown-it-py
 mlflow==3.9.0
-    # via trading-platform
+    # via trading-framework
 mlflow-skinny==3.9.0
     # via mlflow
 mlflow-tracing==3.9.0
@@ -189,9 +189,9 @@ numpy==2.2.6
     #   scikit-learn
     #   scipy
     #   skops
-    #   trading-platform
+    #   trading-framework
 oci==2.167.1
-    # via trading-platform
+    # via trading-framework
 opentelemetry-api==1.39.1
     # via
     #   mlflow-skinny
@@ -247,7 +247,7 @@ polars-runtime-32==1.38.1
 prettytable==3.17.0
     # via skops
 prometheus-client==0.24.1
-    # via trading-platform
+    # via trading-framework
 protobuf==6.33.5
     # via
     #   databricks-sdk
@@ -257,7 +257,7 @@ protobuf==6.33.5
 pyarrow==16.1.0
     # via
     #   mlflow
-    #   trading-platform
+    #   trading-framework
 pyasn1==0.6.2
     # via
     #   pyasn1-modules
@@ -271,7 +271,7 @@ pydantic==2.12.5
     #   fastapi
     #   mlflow-skinny
     #   mlflow-tracing
-    #   trading-platform
+    #   trading-framework
 pydantic-core==2.41.5
     # via pydantic
 pygments==2.19.2
@@ -351,11 +351,9 @@ tornado==6.5.4
 tqdm==4.67.3
     # via
     #   panel
-    #   trading-platform
-trading-platform @ git+https://github.com/trading-engineering/trading-platform.git@e21137d3d2b1414b4d407f13e654f313eedd66cd
-    # via
-    #   -r _git_deps.in
-    #   trading-runtime (pyproject.toml)
+    #   trading-framework
+trading-framework @ git+https://github.com/trading-engineering/trading-framework.git@934d332c21bef56fa76c19f477143d8d438238c2
+    # via -r _git_deps.in
 typing-extensions==4.15.0
     # via
     #   alembic
@@ -386,7 +384,7 @@ tzdata==2025.3
 uc-micro-py==1.0.3
     # via linkify-it-py
 ujson==5.11.0
-    # via trading-platform
+    # via trading-framework
 urllib3==2.6.3
     # via
     #   docker

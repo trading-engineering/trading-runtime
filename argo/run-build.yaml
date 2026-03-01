@@ -7,9 +7,7 @@ spec:
     name: build-push-ghcr
   arguments:
     parameters:
-      - name: trading_runtime_commit
-        value: "${RUNTIME_COMMIT}"
-      - name: trading_platform_commit
-        value: "${PLATFORM_COMMIT}"
       - name: git_branch
         value: "${GIT_BRANCH}"
+      - name: trading_runtime_commit
+        value: "${RUNTIME_COMMIT}"

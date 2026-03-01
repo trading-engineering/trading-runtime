@@ -5,7 +5,7 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 Runtime execution layer and orchestration environment for the
-[trading-platform](https://github.com/trading-engineering/trading-platform)
+[trading-framework](https://github.com/trading-engineering/trading-framework)
 framework.
 
 This repository provides:
@@ -20,10 +20,9 @@ This repository provides:
 
 ## 🧠 What is this?
 
-`trading-runtime` is the execution and orchestration layer built on top of
-`trading-platform`.
+`trading-runtime` is the execution and orchestration layer built on top of `trading-framework`.
 
-While `trading-platform` implements the deterministic trading framework,
+While `trading-framework` implements the deterministic trading framework,
 this repository focuses on:
 
 - how strategies are executed
@@ -35,14 +34,14 @@ It intentionally contains no domain framework logic.
 
 ---
 
-## 🧩 Relationship to trading-platform
+## 🧩 Relationship to trading-framework
 
 ```
-trading-platform  → core framework, backtesting engine, domain logic
+trading-framework  → core framework, backtesting engine, domain logic
 trading-runtime   → executing entrypoints, runtime configs, orchestration
 ```
 
-The platform is consumed as a pinned Git dependency to guarantee
+The framework is consumed as a pinned Git dependency to guarantee
 deterministic runtime environments.
 
 ---
@@ -69,12 +68,12 @@ trading_runtime/strategies/    Example strategies
 
 ## 📌 Dependency Pinning & Reproducibility
 
-The `trading-platform` dependency is pinned by commit SHA.
+The `trading-framework` dependency is pinned by commit SHA.
 
 Create a `.env` file:
 
 ```bash
-TRADING_PLATFORM_COMMIT=<commit-sha>
+TRADING_FRAMEWORK_COMMIT=<commit-sha>
 ```
 
 Generate reproducible environments:
@@ -151,7 +150,7 @@ GitHub Container Registry (GHCR).
 This image contains:
 
 - Python dependencies and entrypoints
-- trading-platform and trading-runtime commit SHA
+- trading-framework and trading-runtime commit SHA
 - strategies and configs
 
 It acts as an immutable and deterministic runtime environment for all backtests.
@@ -229,7 +228,7 @@ Without this secret, the workflow cannot authenticate against GHCR, and Kubernet
 
 | Script                    | Purpose                                         |
 | ------------------------- | ----------------------------------------------- |
-| `compile-requirements.sh` | Pins trading-platform and resolves dependencies |
+| `compile-requirements.sh` | Pins trading-framework and resolves dependencies |
 | `post-create.sh`          | Dev container bootstrap                         |
 | `check.sh`                | Local validation helpers                        |
 

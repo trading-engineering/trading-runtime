@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing!
 
-This repository is a runtime example for the [trading-platform](https://github.com/trading-engineering/trading-platform) framework using
+This repository is a runtime example for the [trading-framework](https://github.com/trading-engineering/trading-framework) framework using
 [Kubernetes](https://kubernetes.io) (via e.g. [MicroK8s](https://microk8s.io)) and [Argo Workflows](https://argoproj.github.io/workflows).
 Contributions should preserve clarity, explicitness and reproducibility.
 

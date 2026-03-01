@@ -85,7 +85,6 @@ jobs:
         id: submit_build
         run: |
           export RUNTIME_COMMIT="${GITHUB_SHA}"
-          export PLATFORM_COMMIT="${GITHUB_SHA}"
           export GIT_BRANCH="${{ needs.resolve-context.outputs.branch }}"
 
           BUILD_NAME=$(
