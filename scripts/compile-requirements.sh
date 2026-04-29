@@ -9,7 +9,7 @@ set +a
 : "${TRADING_FRAMEWORK_COMMIT:?Missing TRADING_FRAMEWORK_COMMIT in .env}"
 
 echo "🔧 Compiling requirements with pip-tools..."
-echo "📌 Pinning trading-framework at commit: $TRADING_FRAMEWORK_COMMIT"
+echo "📌 Pinning core at commit: $TRADING_FRAMEWORK_COMMIT"
 
 python -m pip install --upgrade \
   "pip>=23.3,<25" \
@@ -19,7 +19,7 @@ python -m pip install --upgrade \
 
 # Temporary requirements input for git dependency
 cat > _git_deps.in <<EOF
-trading-framework @ git+https://github.com/trading-engineering/trading-framework.git@$TRADING_FRAMEWORK_COMMIT
+trading-framework @ git+https://github.com/TradingChassis/core.git@$TRADING_FRAMEWORK_COMMIT
 EOF
 
 # Compile runtime deps + git pin
