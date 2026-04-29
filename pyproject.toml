@@ -18,6 +18,13 @@ classifiers = [
   "Operating System :: OS Independent"
 ]
 
+dependencies = [
+  "hftbacktest>=2,<3",
+  "mlflow>=3,<4",
+  "oci>=2,<3",
+  "prometheus-client>=0.24,<1",
+]
+
 [project.optional-dependencies]
 dev = [
   "pytest>=9,<10",
