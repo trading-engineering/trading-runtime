@@ -9,12 +9,17 @@ from trading_framework.core.domain.state import StrategyState
 from trading_framework.core.domain.types import (
     BookLevel,
     BookPayload,
+    CancelOrderIntent,
     MarketEvent,
+    NewOrderIntent,
+    OrderSubmittedEvent,
     Price,
     Quantity,
+    ReplaceOrderIntent,
 )
 from trading_framework.core.events.event_bus import EventBus
 from trading_framework.core.risk.risk_config import RiskConfig
+from trading_framework.core.risk.risk_engine import GateDecision
 from trading_framework.strategies.base import Strategy
 
 import trading_runtime.backtest.engine.strategy_runner as strategy_runner_module
@@ -171,13 +176,79 @@ def _depth_snapshot() -> object:
     )
 
 
+def _new_intent(ts_ns_local: int = 2) -> NewOrderIntent:
+    return NewOrderIntent(
+        ts_ns_local=ts_ns_local,
+        instrument="BTC_USDC-PERPETUAL",
+        client_order_id="cid-new-1",
+        intents_correlation_id="corr-new-1",
+        side="buy",
+        order_type="limit",
+        intended_qty=Quantity(value=1.0, unit="contracts"),
+        intended_price=Price(currency="USDC", value=100.0),
+        time_in_force="GTC",
+    )
+
+
+def _replace_intent(ts_ns_local: int = 2) -> ReplaceOrderIntent:
+    return ReplaceOrderIntent(
+        ts_ns_local=ts_ns_local,
+        instrument="BTC_USDC-PERPETUAL",
+        client_order_id="cid-existing-1",
+        intents_correlation_id="corr-replace-1",
+        side="buy",
+        order_type="limit",
+        intended_qty=Quantity(value=2.0, unit="contracts"),
+        intended_price=Price(currency="USDC", value=101.0),
+    )
+
+
+def _cancel_intent(ts_ns_local: int = 2) -> CancelOrderIntent:
+    return CancelOrderIntent(
+        ts_ns_local=ts_ns_local,
+        instrument="BTC_USDC-PERPETUAL",
+        client_order_id="cid-existing-1",
+        intents_correlation_id="corr-cancel-1",
+    )
+
+
+class _EmitIntentsStrategy(Strategy):
+    def __init__(self, intents: list[object]) -> None:
+        self._intents = intents
+
+    def on_feed(self, state: Any, event: Any, engine_cfg: Any, constraints: Any) -> list[Any]:
+        _ = (state, event, engine_cfg, constraints)
+        return list(self._intents)
+
+    def on_order_update(self, state: Any, engine_cfg: Any, constraints: Any) -> list[Any]:
+        _ = (state, engine_cfg, constraints)
+        return []
+
+    def on_risk_decision(self, decision: Any) -> None:
+        _ = decision
+
+
+def _decision_for(accepted_now: list[Any]) -> GateDecision:
+    return GateDecision(
+        ts_ns_local=2,
+        accepted_now=accepted_now,
+        queued=[],
+        rejected=[],
+        replaced_in_queue=[],
+        dropped_in_queue=[],
+        handled_in_queue=[],
+        execution_rejected=[],
+        next_send_ts_ns_local=None,
+    )
+
+
 def test_process_market_event_routes_through_event_entry_with_core_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runner = object.__new__(HftStrategyRunner)
     runner.strategy_state = object()
     runner._core_cfg = _core_cfg()
-    runner._next_market_processing_position_index = 0
+    runner._next_canonical_processing_position_index = 0
 
     captured: list[tuple[int, object]] = []
 
@@ -197,7 +268,7 @@ def test_process_market_event_routes_through_event_entry_with_core_configuration
     assert [idx for idx, _ in captured] == [0, 1]
     assert captured[0][1] is runner._core_cfg
     assert captured[1][1] is runner._core_cfg
-    assert runner._next_market_processing_position_index == 2
+    assert runner._next_canonical_processing_position_index == 2
 
 
 def test_market_branch_calls_canonical_boundary_not_update_market(
@@ -246,28 +317,28 @@ def test_missing_core_cfg_fails_before_market_mutation() -> None:
     runner = object.__new__(HftStrategyRunner)
     runner.strategy_state = StrategyState(event_bus=EventBus(sinks=[]))
     runner._core_cfg = None
-    runner._next_market_processing_position_index = 0
+    runner._next_canonical_processing_position_index = 0
 
     with pytest.raises(ValueError, match="CoreConfiguration is required"):
         runner._process_canonical_market_event(_market_event(42))
 
     assert runner.strategy_state.market == {}
     assert runner.strategy_state._last_processing_position_index is None
-    assert runner._next_market_processing_position_index == 0
+    assert runner._next_canonical_processing_position_index == 0
 
 
 def test_invalid_core_cfg_type_fails_before_market_mutation() -> None:
     runner = object.__new__(HftStrategyRunner)
     runner.strategy_state = StrategyState(event_bus=EventBus(sinks=[]))
     runner._core_cfg = object()
-    runner._next_market_processing_position_index = 0
+    runner._next_canonical_processing_position_index = 0
 
     with pytest.raises(TypeError, match="configuration must be CoreConfiguration or None"):
         runner._process_canonical_market_event(_market_event(42))
 
     assert runner.strategy_state.market == {}
     assert runner.strategy_state._last_processing_position_index is None
-    assert runner._next_market_processing_position_index == 0
+    assert runner._next_canonical_processing_position_index == 0
 
 
 def test_order_snapshot_branch_keeps_compatibility_path(
@@ -320,3 +391,247 @@ def test_order_snapshot_branch_keeps_compatibility_path(
 
     assert calls["update_account"] == 1
     assert calls["ingest_order_snapshots"] == 1
+
+
+def test_successful_new_dispatch_processes_order_submitted_before_mark_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    new_intent = _new_intent()
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_EmitIntentsStrategy([new_intent]),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+    monkeypatch.setattr(runner.strategy_state, "apply_fill_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: _decision_for([new_intent]),
+    )
+
+    ordering: list[str] = []
+    submitted_events: list[OrderSubmittedEvent] = []
+    marks: list[tuple[str, str, str]] = []
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        _ = (state, configuration)
+        if isinstance(entry.event, OrderSubmittedEvent):
+            ordering.append("submitted")
+            submitted_events.append(entry.event)
+
+    def _spy_mark_intent_sent(instrument: str, client_order_id: str, intent_type: str) -> None:
+        ordering.append("mark")
+        marks.append((instrument, client_order_id, intent_type))
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(runner.strategy_state, "mark_intent_sent", _spy_mark_intent_sent)
+
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 1],
+        ts_sequence=[1_111, 5_000_000_000, 5_000_000_001],
+        depth=_depth_snapshot(),
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert len(submitted_events) == 1
+    event = submitted_events[0]
+    assert event.instrument == new_intent.instrument
+    assert event.client_order_id == new_intent.client_order_id
+    assert event.side == new_intent.side
+    assert event.order_type == new_intent.order_type
+    assert event.intended_price == new_intent.intended_price
+    assert event.intended_qty == new_intent.intended_qty
+    assert event.time_in_force == new_intent.time_in_force
+    assert event.intent_correlation_id == new_intent.intents_correlation_id
+    assert event.dispatch_attempt_id is None
+    assert event.runtime_correlation is None
+    assert event.ts_ns_local_dispatch == 5_000_000_000
+    assert ordering == ["submitted", "mark"]
+    assert marks == [(new_intent.instrument, new_intent.client_order_id, "new")]
+
+
+def test_failed_new_dispatch_processes_no_order_submitted_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    new_intent = _new_intent()
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_EmitIntentsStrategy([new_intent]),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: _decision_for([new_intent]),
+    )
+
+    submitted_event_count = 0
+    marked_count = 0
+    captured_decisions: list[GateDecision] = []
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        nonlocal submitted_event_count
+        _ = (state, configuration)
+        if isinstance(entry.event, OrderSubmittedEvent):
+            submitted_event_count += 1
+
+    def _spy_mark_intent_sent(instrument: str, client_order_id: str, intent_type: str) -> None:
+        nonlocal marked_count
+        _ = (instrument, client_order_id, intent_type)
+        marked_count += 1
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(runner.strategy_state, "mark_intent_sent", _spy_mark_intent_sent)
+    monkeypatch.setattr(
+        runner.strategy,
+        "on_risk_decision",
+        lambda decision: captured_decisions.append(decision),
+    )
+
+    class _ExecutionFailNew:
+        def apply_intents(self, intents: list[Any]) -> list[tuple[Any, str]]:
+            _ = intents
+            return [(new_intent, "EXCHANGE_REJECT")]
+
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 1],
+        ts_sequence=[10, 20, 30],
+        depth=_depth_snapshot(),
+    )
+    runner.run(
+        venue=venue,
+        execution=_ExecutionFailNew(),
+        recorder=_RecorderWrapper(),
+    )
+
+    assert submitted_event_count == 0
+    assert marked_count == 0
+    assert len(captured_decisions) == 1
+    assert len(captured_decisions[0].execution_rejected) == 1
+    assert captured_decisions[0].execution_rejected[0].intent.client_order_id == new_intent.client_order_id
+
+
+def test_successful_replace_cancel_dispatch_processes_no_order_submitted_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    replace_intent = _replace_intent()
+    cancel_intent = _cancel_intent()
+    accepted_now = [replace_intent, cancel_intent]
+
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_EmitIntentsStrategy(accepted_now),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: _decision_for(accepted_now),
+    )
+
+    submitted_event_count = 0
+    marks: list[tuple[str, str, str]] = []
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        nonlocal submitted_event_count
+        _ = (state, configuration)
+        if isinstance(entry.event, OrderSubmittedEvent):
+            submitted_event_count += 1
+
+    def _spy_mark_intent_sent(instrument: str, client_order_id: str, intent_type: str) -> None:
+        marks.append((instrument, client_order_id, intent_type))
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(runner.strategy_state, "mark_intent_sent", _spy_mark_intent_sent)
+
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 1],
+        ts_sequence=[100, 200, 300],
+        depth=_depth_snapshot(),
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert submitted_event_count == 0
+    assert marks == [
+        (
+            replace_intent.instrument,
+            replace_intent.client_order_id,
+            "replace",
+        ),
+        (
+            cancel_intent.instrument,
+            cancel_intent.client_order_id,
+            "cancel",
+        ),
+    ]
+
+
+def test_global_canonical_counter_shared_between_market_and_order_submitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    new_intent = _new_intent()
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_EmitIntentsStrategy([new_intent]),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: _decision_for([new_intent]),
+    )
+
+    positions: list[tuple[int, str]] = []
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        _ = (state, configuration)
+        event_name = type(entry.event).__name__
+        positions.append((entry.position.index, event_name))
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 1],
+        ts_sequence=[7, 9_999_999_999, 10_000_000_000],
+        depth=_depth_snapshot(),
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert positions == [
+        (0, "MarketEvent"),
+        (1, "OrderSubmittedEvent"),
+    ]
+    assert runner._next_canonical_processing_position_index == 2
+
+
+def test_canonical_counter_increments_only_after_successful_canonical_processing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = object.__new__(HftStrategyRunner)
+    runner.strategy_state = object()
+    runner._core_cfg = _core_cfg()
+    runner._next_canonical_processing_position_index = 0
+
+    def _fail(*args: object, **kwargs: object) -> None:
+        _ = (args, kwargs)
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _fail)
+    with pytest.raises(RuntimeError, match="boom"):
+        runner._process_canonical_market_event(_market_event(1))
+    assert runner._next_canonical_processing_position_index == 0
+
+    called = {"count": 0}
+
+    def _ok(*args: object, **kwargs: object) -> None:
+        _ = (args, kwargs)
+        called["count"] += 1
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _ok)
+    runner._process_canonical_market_event(_market_event(2))
+    assert called["count"] == 1
+    assert runner._next_canonical_processing_position_index == 1

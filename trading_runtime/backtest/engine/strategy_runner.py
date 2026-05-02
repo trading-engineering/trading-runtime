@@ -18,7 +18,9 @@ from trading_framework.core.domain.types import (
     BookLevel,
     BookPayload,
     MarketEvent,
+    NewOrderIntent,
     OrderIntent,
+    OrderSubmittedEvent,
     Price,
     Quantity,
 )
@@ -75,7 +77,21 @@ class HftStrategyRunner:
         )
 
         self._next_send_ts_ns_local: int | None = None
-        self._next_market_processing_position_index: int = 0
+        self._next_canonical_processing_position_index: int = 0
+
+    def _process_canonical_event(self, event: object) -> None:
+        entry = EventStreamEntry(
+            position=ProcessingPosition(
+                index=self._next_canonical_processing_position_index,
+            ),
+            event=event,
+        )
+        process_event_entry(
+            self.strategy_state,
+            entry,
+            configuration=self._core_cfg,
+        )
+        self._next_canonical_processing_position_index += 1
 
     def _build_event_bus(
         self,
@@ -117,18 +133,28 @@ class HftStrategyRunner:
         return sorted(intents, key=lambda it: (intent_priority(it), it.ts_ns_local))
 
     def _process_canonical_market_event(self, market_event: MarketEvent) -> None:
-        entry = EventStreamEntry(
-            position=ProcessingPosition(
-                index=self._next_market_processing_position_index,
-            ),
-            event=market_event,
+        self._process_canonical_event(market_event)
+
+    def _process_canonical_order_submitted_event(
+        self,
+        intent: NewOrderIntent,
+        *,
+        ts_ns_local_dispatch: int,
+    ) -> None:
+        order_submitted_event = OrderSubmittedEvent(
+            ts_ns_local_dispatch=ts_ns_local_dispatch,
+            instrument=intent.instrument,
+            client_order_id=intent.client_order_id,
+            side=intent.side,
+            order_type=intent.order_type,
+            intended_price=intent.intended_price,
+            intended_qty=intent.intended_qty,
+            time_in_force=intent.time_in_force,
+            intent_correlation_id=intent.intents_correlation_id,
+            dispatch_attempt_id=None,
+            runtime_correlation=None,
         )
-        process_event_entry(
-            self.strategy_state,
-            entry,
-            configuration=self._core_cfg,
-        )
-        self._next_market_processing_position_index += 1
+        self._process_canonical_event(order_submitted_event)
 
     def run(
         self,
@@ -314,6 +340,11 @@ class HftStrategyRunner:
                     for it in decision.accepted_now:
                         if (it.instrument, it.client_order_id) in failed_keys:
                             continue
+                        if it.intent_type == "new":
+                            self._process_canonical_order_submitted_event(
+                                it,
+                                ts_ns_local_dispatch=sim_now_ns,
+                            )
                         self.strategy_state.mark_intent_sent(
                             it.instrument,
                             it.client_order_id,
