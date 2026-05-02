@@ -18,6 +18,9 @@ from trading_runtime.backtest.orchestrator.summary import (
 )
 from trading_runtime.backtest.orchestrator.sweeps import RangeSpec
 from trading_runtime.backtest.runtime.context import SweepContext
+from trading_runtime.backtest.runtime.core_configuration_mapper import (
+    build_core_configuration_from_run_config,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -79,10 +82,11 @@ def _emit_sweep_context(
                 symbol=symbol,
                 file_keys=tuple(segment.files),
                 parameters={
-                    # pass through full engine/strategy/risk blocks
+                    # pass through full engine/strategy/risk/core blocks
                     "engine": base_cfg["engine"],
                     "strategy": base_cfg["strategy"],
                     "risk": base_cfg["risk"],
+                    "core": base_cfg["core"],
                     # plus sweep-specific parameters
                     "sweep": sweep.parameters,
                 },
@@ -157,6 +161,7 @@ def main() -> None:
     # ------------------------------------------------------------------
 
     cfg = _load_json(args.config)
+    _ = build_core_configuration_from_run_config(cfg)
 
     experiment_id: str = cfg["id"]
     experiment_cfg = cfg["experiment"]

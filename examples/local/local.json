@@ -83,6 +83,19 @@
     "order_qty": 0.1,
     "use_price_tick_levels": 3,
     "post_only": true
+  },
+
+  "core": {
+    "version": "v1",
+    "market": {
+      "instruments": {
+        "BTC_USDC-PERPETUAL": {
+          "tick_size": 0.1,
+          "lot_size": 0.01,
+          "contract_size": 1
+        }
+      }
+    }
   }
 
 }

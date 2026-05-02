@@ -13,6 +13,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from trading_framework.core.risk.risk_config import RiskConfig
+from trading_framework.strategies.strategy_config import StrategyConfig
+
 from trading_runtime.backtest.engine.hft_engine import (
     HftBacktestConfig,
     HftBacktestEngine,
@@ -20,8 +23,9 @@ from trading_runtime.backtest.engine.hft_engine import (
 )
 from trading_runtime.backtest.io.s3_adapter import OCIObjectStorageS3Shim
 from trading_runtime.backtest.runtime.context import SweepContext
-from trading_framework.core.risk.risk_config import RiskConfig
-from trading_framework.strategies.strategy_config import StrategyConfig
+from trading_runtime.backtest.runtime.core_configuration_mapper import (
+    build_core_configuration_from_run_config,
+)
 
 
 class SweepMaterializer:
@@ -80,10 +84,12 @@ class SweepEngineRunner:
         engine_cfg: HftEngineConfig,
         strategy_cfg: StrategyConfig,
         risk_cfg: RiskConfig,
+        core_cfg: object,
     ) -> None:
         self._engine_cfg = engine_cfg
         self._strategy_cfg = strategy_cfg
         self._risk_cfg = risk_cfg
+        self._core_cfg = core_cfg
 
     def run(self, ctx: SweepContext) -> dict[str, Any]:
         """
@@ -114,6 +120,7 @@ class SweepEngineRunner:
             engine_cfg=engine_cfg,
             strategy_cfg=self._strategy_cfg,
             risk_cfg=self._risk_cfg,
+            core_cfg=self._core_cfg,
         )
 
         engine = HftBacktestEngine(backtest_cfg)
@@ -440,6 +447,13 @@ def main() -> None:
     ctx = SweepContext(**json.loads(args.context.read_text(encoding="utf-8")))
     ctx = replace(ctx, scratch_root=args.scratch_root)
 
+    run_config_for_core: dict[str, object] = {}
+    if "engine" in ctx.parameters:
+        run_config_for_core["engine"] = ctx.parameters["engine"]
+    if "core" in ctx.parameters:
+        run_config_for_core["core"] = ctx.parameters["core"]
+    core_cfg = build_core_configuration_from_run_config(run_config_for_core)
+
     # ------------------------------------------------------------------
     # Setup
     # ------------------------------------------------------------------
@@ -455,6 +469,7 @@ def main() -> None:
         engine_cfg=engine_cfg,
         strategy_cfg=strategy_cfg,
         risk_cfg=risk_cfg,
+        core_cfg=core_cfg,
     )
 
     persister = SweepResultPersister(bucket="data")

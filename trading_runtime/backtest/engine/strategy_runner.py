@@ -17,16 +17,18 @@ from trading_framework.core.domain.types import (
     Quantity,
 )
 from trading_framework.core.events.event_bus import EventBus
-from trading_runtime.core.events.sinks.file_recorder import FileRecorderSink
 from trading_framework.core.events.sinks.sink_logging import LoggingEventSink
 from trading_framework.core.ports.venue_adapter import VenueAdapter
 from trading_framework.core.risk.risk_config import RiskConfig
 from trading_framework.core.risk.risk_engine import RejectedIntent, RiskEngine
 
+from trading_runtime.core.events.sinks.file_recorder import FileRecorderSink
+
 if TYPE_CHECKING:
+    from trading_framework.strategies.base import Strategy
+
     from trading_runtime.backtest.adapters.execution import HftBacktestExecutionAdapter
     from trading_runtime.backtest.engine.hft_engine import HftEngineConfig
-    from trading_framework.strategies.base import Strategy
 
 
 MAX_TIMEOUT_NS = 1 << 62  # Effectively "wait forever" without a heartbeat

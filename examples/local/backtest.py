@@ -23,6 +23,9 @@ from trading_runtime.backtest.engine.hft_engine import (
     HftBacktestEngine,
     HftEngineConfig,
 )
+from trading_runtime.backtest.runtime.core_configuration_mapper import (
+    build_core_configuration_from_run_config,
+)
 
 
 def load_config(path: str) -> HftBacktestConfig:
@@ -42,6 +45,7 @@ def load_config(path: str) -> HftBacktestConfig:
     engine_cfg = HftEngineConfig(**engine_raw)
     strategy_cfg = StrategyConfig(**strategy_raw)
     risk_cfg = RiskConfig(**risk_raw)
+    core_cfg = build_core_configuration_from_run_config(raw_json)
 
     return HftBacktestConfig(
         id=raw_json["id"],
@@ -49,6 +53,7 @@ def load_config(path: str) -> HftBacktestConfig:
         engine_cfg=engine_cfg,
         strategy_cfg=strategy_cfg,
         risk_cfg=risk_cfg,
+        core_cfg=core_cfg,
     )
 
 

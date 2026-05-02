@@ -13,7 +13,11 @@ from hftbacktest import (
 )
 
 if TYPE_CHECKING:
+    from trading_framework.core.domain.configuration import CoreConfiguration
     from trading_framework.core.risk.risk_config import RiskConfig
+
+from trading_framework.strategies.base import Strategy
+from trading_framework.strategies.strategy_config import StrategyConfig
 
 from trading_runtime.backtest.adapters.execution import HftBacktestExecutionAdapter
 from trading_runtime.backtest.adapters.venue import HftBacktestVenueAdapter
@@ -23,8 +27,6 @@ from trading_runtime.backtest.engine.engine_base import (
     BacktestResult,
 )
 from trading_runtime.backtest.engine.strategy_runner import HftStrategyRunner
-from trading_framework.strategies.base import Strategy
-from trading_framework.strategies.strategy_config import StrategyConfig
 
 
 # pylint: disable=too-many-instance-attributes
@@ -75,6 +77,8 @@ class HftBacktestConfig(BacktestConfig):
     engine_cfg: HftEngineConfig
     strategy_cfg: StrategyConfig
     risk_cfg: RiskConfig
+    # Boundary-prepared config for canonical core processing adoption.
+    core_cfg: CoreConfiguration
 
 
 def _build_backtester(engine_cfg: HftEngineConfig) -> ROIVectorMarketDepthBacktest:
