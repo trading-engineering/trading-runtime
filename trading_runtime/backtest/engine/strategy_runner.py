@@ -17,6 +17,7 @@ from trading_framework.core.domain.state import StrategyState
 from trading_framework.core.domain.types import (
     BookLevel,
     BookPayload,
+    ControlTimeEvent,
     MarketEvent,
     NewOrderIntent,
     OrderIntent,
@@ -78,6 +79,7 @@ class HftStrategyRunner:
 
         self._next_send_ts_ns_local: int | None = None
         self._next_canonical_processing_position_index: int = 0
+        self._last_injected_control_deadline_ns: int | None = None
 
     def _process_canonical_event(self, event: object) -> None:
         entry = EventStreamEntry(
@@ -155,6 +157,23 @@ class HftStrategyRunner:
             runtime_correlation=None,
         )
         self._process_canonical_event(order_submitted_event)
+
+    def _process_canonical_control_time_event(
+        self,
+        *,
+        sim_now_ns: int,
+        scheduled_deadline_ns: int,
+    ) -> None:
+        control_time_event = ControlTimeEvent(
+            ts_ns_local_control=sim_now_ns,
+            reason="scheduled_control_recheck",
+            due_ts_ns_local=scheduled_deadline_ns,
+            realized_ts_ns_local=sim_now_ns,
+            obligation_reason="rate_limit",
+            obligation_due_ts_ns_local=scheduled_deadline_ns,
+            runtime_correlation=None,
+        )
+        self._process_canonical_event(control_time_event)
 
     def run(
         self,
@@ -306,13 +325,24 @@ class HftStrategyRunner:
             # -----------------------------------------------------------------
             # Queue flush
             # -----------------------------------------------------------------
+            scheduled_deadline_ns: int | None = None
             if (
                 self._next_send_ts_ns_local is not None
                 and sim_now_ns >= self._next_send_ts_ns_local
             ):
+                scheduled_deadline_ns = self._next_send_ts_ns_local
                 raw_intents.extend(
                     self.strategy_state.pop_queued_intents(instrument)
                 )
+                if (
+                    scheduled_deadline_ns
+                    != self._last_injected_control_deadline_ns
+                ):
+                    self._process_canonical_control_time_event(
+                        sim_now_ns=sim_now_ns,
+                        scheduled_deadline_ns=scheduled_deadline_ns,
+                    )
+                    self._last_injected_control_deadline_ns = scheduled_deadline_ns
 
             # -----------------------------------------------------------------
             # Gate + execution

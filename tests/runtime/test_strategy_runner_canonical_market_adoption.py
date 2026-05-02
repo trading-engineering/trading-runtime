@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from types import SimpleNamespace
 from typing import Any
 
@@ -10,6 +11,7 @@ from trading_framework.core.domain.types import (
     BookLevel,
     BookPayload,
     CancelOrderIntent,
+    ControlTimeEvent,
     MarketEvent,
     NewOrderIntent,
     OrderSubmittedEvent,
@@ -635,3 +637,235 @@ def test_canonical_counter_increments_only_after_successful_canonical_processing
     runner._process_canonical_market_event(_market_event(2))
     assert called["count"] == 1
     assert runner._next_canonical_processing_position_index == 1
+
+
+def test_control_time_event_injected_when_scheduled_deadline_is_realized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+    runner._next_send_ts_ns_local = 5
+
+    control_events: list[ControlTimeEvent] = []
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        _ = (state, configuration)
+        if isinstance(entry.event, ControlTimeEvent):
+            control_events.append(entry.event)
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    venue = _StubVenue(
+        rc_sequence=[0, 0, 1],
+        ts_sequence=[1, 10, 11],
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert len(control_events) == 1
+    event = control_events[0]
+    assert event.ts_ns_local_control == 10
+    assert event.reason == "scheduled_control_recheck"
+    assert event.due_ts_ns_local == 5
+    assert event.realized_ts_ns_local == 10
+    assert event.obligation_reason == "rate_limit"
+    assert event.obligation_due_ts_ns_local == 5
+    assert event.runtime_correlation is None
+
+
+def test_no_control_time_event_when_no_deadline_scheduled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+    control_count = 0
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        nonlocal control_count
+        _ = (state, configuration)
+        if isinstance(entry.event, ControlTimeEvent):
+            control_count += 1
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 1],
+        ts_sequence=[1, 2, 3],
+        depth=_depth_snapshot(),
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert control_count == 0
+
+
+def test_no_control_time_event_when_deadline_not_yet_realized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+    runner._next_send_ts_ns_local = 50
+    control_count = 0
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        nonlocal control_count
+        _ = (state, configuration)
+        if isinstance(entry.event, ControlTimeEvent):
+            control_count += 1
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    venue = _StubVenue(
+        rc_sequence=[0, 0, 1],
+        ts_sequence=[1, 10, 20],
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert control_count == 0
+
+
+def test_control_time_deadline_injection_is_not_periodic_for_same_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+    runner._next_send_ts_ns_local = 5
+    control_count = 0
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        nonlocal control_count
+        _ = (state, configuration)
+        if isinstance(entry.event, ControlTimeEvent):
+            control_count += 1
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    venue = _StubVenue(
+        rc_sequence=[0, 0, 0, 1],
+        ts_sequence=[1, 10, 10, 11],
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert control_count == 1
+
+
+def test_control_time_event_processed_after_pop_and_before_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queued_intent = _new_intent()
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+    runner._next_send_ts_ns_local = 5
+
+    ordering: list[str] = []
+    captured_raw_inputs: list[list[Any]] = []
+
+    def _spy_pop_queued_intents(instrument: str) -> list[Any]:
+        _ = instrument
+        ordering.append("pop")
+        return [queued_intent]
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        _ = (state, configuration)
+        if isinstance(entry.event, ControlTimeEvent):
+            ordering.append("control")
+
+    def _spy_decide_intents(**kwargs: Any) -> GateDecision:
+        ordering.append("gate")
+        captured_raw_inputs.append(list(kwargs["raw_intents"]))
+        return _decision_for([])
+
+    monkeypatch.setattr(runner.strategy_state, "pop_queued_intents", _spy_pop_queued_intents)
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(runner.risk, "decide_intents", _spy_decide_intents)
+
+    venue = _StubVenue(
+        rc_sequence=[0, 0, 1],
+        ts_sequence=[1, 10, 11],
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert ordering == ["pop", "control", "gate"]
+    assert len(captured_raw_inputs) == 1
+    assert [it.client_order_id for it in captured_raw_inputs[0]] == [queued_intent.client_order_id]
+
+
+def test_global_canonical_counter_shared_with_control_time_market_and_submitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    new_intent = _new_intent()
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_EmitIntentsStrategy([new_intent]),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+    runner._next_send_ts_ns_local = 5
+
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: _decision_for([new_intent]),
+    )
+
+    positions: list[tuple[int, str]] = []
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        _ = (state, configuration)
+        positions.append((entry.position.index, type(entry.event).__name__))
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 1],
+        ts_sequence=[1, 10, 11],
+        depth=_depth_snapshot(),
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert positions == [
+        (0, "MarketEvent"),
+        (1, "ControlTimeEvent"),
+        (2, "OrderSubmittedEvent"),
+    ]
+    assert runner._next_canonical_processing_position_index == 3
+
+
+def test_fallback_second_boundary_wakeup_behavior_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    intent = _new_intent()
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_EmitIntentsStrategy([intent]),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+    runner.strategy_state.queued_intents.setdefault(runner.engine_cfg.instrument, deque())
+    runner.strategy_state.queued_intents[runner.engine_cfg.instrument].append(
+        SimpleNamespace(intent=intent)
+    )
+
+    monkeypatch.setattr(runner.risk, "decide_intents", lambda **_: _decision_for([]))
+
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 1],
+        ts_sequence=[1, 2_000_000_000, 2_000_000_001],
+        depth=_depth_snapshot(),
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert runner._next_send_ts_ns_local == 3_000_000_000
