@@ -158,6 +158,7 @@ class HftBacktestEngine(BacktestEngine):
             engine_cfg=engine_cfg,
             strategy=strategy,
             risk_cfg=risk_cfg,
+            core_cfg=cfg.core_cfg,
         )
 
         # 4) Backtest-only venue and execution adapters

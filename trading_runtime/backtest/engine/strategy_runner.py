@@ -7,6 +7,12 @@ from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from trading_framework.core.domain.configuration import CoreConfiguration
+from trading_framework.core.domain.processing import process_event_entry
+from trading_framework.core.domain.processing_order import (
+    EventStreamEntry,
+    ProcessingPosition,
+)
 from trading_framework.core.domain.state import StrategyState
 from trading_framework.core.domain.types import (
     BookLevel,
@@ -49,9 +55,11 @@ class HftStrategyRunner:
         engine_cfg: HftEngineConfig,
         strategy: Strategy,
         risk_cfg: RiskConfig,
+        core_cfg: CoreConfiguration,
     ) -> None:
         self.engine_cfg = engine_cfg
         self.strategy = strategy
+        self._core_cfg = core_cfg
 
         event_bus = self._build_event_bus(
             path=Path(engine_cfg.event_bus_path),
@@ -67,6 +75,7 @@ class HftStrategyRunner:
         )
 
         self._next_send_ts_ns_local: int | None = None
+        self._next_market_processing_position_index: int = 0
 
     def _build_event_bus(
         self,
@@ -107,6 +116,20 @@ class HftStrategyRunner:
 
         return sorted(intents, key=lambda it: (intent_priority(it), it.ts_ns_local))
 
+    def _process_canonical_market_event(self, market_event: MarketEvent) -> None:
+        entry = EventStreamEntry(
+            position=ProcessingPosition(
+                index=self._next_market_processing_position_index,
+            ),
+            event=market_event,
+        )
+        process_event_entry(
+            self.strategy_state,
+            entry,
+            configuration=self._core_cfg,
+        )
+        self._next_market_processing_position_index += 1
+
     def run(
         self,
         venue: VenueAdapter,
@@ -117,8 +140,6 @@ class HftStrategyRunner:
         # pylint: disable=too-many-locals,too-many-branches,too-many-statements
 
         instrument = self.engine_cfg.instrument
-        contract_size = self.engine_cfg.contract_size
-
         # Initialize hftbacktest engine
         # Fetch very first event block to set local timestamp
         venue.wait_next(timeout_ns=MAX_TIMEOUT_NS, include_order_resp=False)
@@ -215,18 +236,7 @@ class HftStrategyRunner:
                     ),
                 )
 
-                self.strategy_state.update_market(
-                    instrument=instrument,
-                    best_bid=depth.best_bid,
-                    best_ask=depth.best_ask,
-                    best_bid_qty=depth.best_bid_qty,
-                    best_ask_qty=depth.best_ask_qty,
-                    tick_size=depth.tick_size,
-                    lot_size=depth.lot_size,
-                    contract_size=contract_size,
-                    ts_ns_local=sim_now_ns,
-                    ts_ns_exch=sim_now_ns,
-                )
+                self._process_canonical_market_event(market_event)
 
                 constraints = self.risk.build_constraints(sim_now_ns)
                 raw_intents.extend(
