@@ -8,7 +8,10 @@ from typing import Any
 
 import pytest
 
-from trading_runtime.backtest.adapters.execution import HftBacktestExecutionAdapter
+from trading_runtime.backtest.adapters.execution import (
+    HftBacktestExecutionAdapter,
+    _to_i64_order_id,
+)
 from trading_runtime.backtest.adapters.venue import HftBacktestVenueAdapter
 from trading_runtime.backtest.engine.strategy_runner import HftStrategyRunner
 
@@ -84,6 +87,91 @@ def test_probe_order_dtype_diagnostics_and_contract_gaps() -> None:
     assert "client_order_id" not in field_names
     assert "source_sequence" not in field_names
     assert "liquidity_flag" not in field_names
+
+
+def test_probe_wait_order_response_is_status_code_only_and_timeout_ambiguous() -> None:
+    source = inspect.getsource(ROIVectorMarketDepthBacktest.wait_order_response)
+
+    assert "def wait_order_response" in source
+    assert "-> int64" in source
+    assert "reaches the timeout" in source
+    assert "Returns:" in source
+    assert "order response" in source
+
+    # Probe fact: no structured payload object is returned from this method.
+    assert "dict" not in source
+    assert "payload" not in source
+    assert "record" not in source
+
+
+def test_probe_wait_next_feed_response_signal_is_any_order_response_only() -> None:
+    source = inspect.getsource(ROIVectorMarketDepthBacktest.wait_next_feed)
+
+    assert "include_order_resp" in source
+    assert "`3` when it receives an order response" in source
+    assert "any order response" in source
+    assert "source_sequence" not in source
+    assert "order_id" not in source
+
+
+def test_probe_immediate_order_lookup_fields_and_missing_boundary_fields() -> None:
+    field_names = set(hbt_types.order_dtype.names or ())
+
+    # Immediate lookup provides current order state fields.
+    assert {
+        "order_id",
+        "status",
+        "req",
+        "exec_qty",
+        "exec_price_tick",
+        "maker",
+        "local_timestamp",
+        "exch_timestamp",
+        "leaves_qty",
+    } <= field_names
+
+    # Missing record-boundary/correlation fields for source contract.
+    assert "client_order_id" not in field_names
+    assert "source_sequence" not in field_names
+    assert "explicit_update_kind" not in field_names
+    assert "response_sequence" not in field_names
+    assert "cum_filled_qty" not in field_names
+
+
+def test_probe_client_order_id_correlation_is_one_way_without_reverse_map() -> None:
+    # Deterministic forward mapping exists.
+    assert _to_i64_order_id("cid-123") == _to_i64_order_id("cid-123")
+    assert _to_i64_order_id("42") == 42
+
+    adapter_fields = set(HftBacktestExecutionAdapter.__dataclass_fields__.keys())
+    apply_intents_source = inspect.getsource(HftBacktestExecutionAdapter.apply_intents)
+    id_mapping_source = inspect.getsource(_to_i64_order_id)
+
+    # Probe fact: adapter persists no reverse order_id -> client_order_id correlation map.
+    assert adapter_fields == {"hbt", "asset_no"}
+    assert "blake2b" in id_mapping_source
+    assert "_to_i64_order_id(intent.client_order_id)" in apply_intents_source
+    assert "reverse" not in apply_intents_source
+    assert "mapping" not in apply_intents_source
+
+
+def test_probe_wait_order_response_plus_immediate_lookup_candidate_stays_ineligible() -> None:
+    row = ProbeRow(
+        source="L: wait_order_response + immediate orders().get(order_id)",
+        explicit_feedback_boundary=False,
+        authoritative_filled_price=False,
+        authoritative_cum_filled_qty=False,
+        authoritative_liquidity_flag=False,
+        deterministic_client_order_id_correlation=False,
+        deterministic_source_sequence=False,
+        batching_safe=False,
+        eligible_for_execution_feedback_record_source=False,
+    )
+
+    assert row.eligible_for_execution_feedback_record_source is False
+    assert row.explicit_feedback_boundary is False
+    assert row.deterministic_source_sequence is False
+    assert row.deterministic_client_order_id_correlation is False
 
 
 def test_probe_contract_matrix_for_candidates_a_b_c() -> None:
