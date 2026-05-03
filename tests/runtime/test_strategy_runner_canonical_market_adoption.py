@@ -12,6 +12,7 @@ from trading_framework.core.domain.types import (
     BookPayload,
     CancelOrderIntent,
     ControlTimeEvent,
+    FillEvent,
     MarketEvent,
     NewOrderIntent,
     OrderSubmittedEvent,
@@ -27,7 +28,10 @@ from trading_framework.strategies.base import Strategy
 import trading_runtime.backtest.engine.strategy_runner as strategy_runner_module
 from trading_runtime.backtest.engine.event_stream_cursor import EventStreamCursor
 from trading_runtime.backtest.engine.hft_engine import HftEngineConfig
-from trading_runtime.backtest.engine.strategy_runner import HftStrategyRunner
+from trading_runtime.backtest.engine.strategy_runner import (
+    MAX_TIMEOUT_NS,
+    HftStrategyRunner,
+)
 
 
 class _NoopStrategy(Strategy):
@@ -72,9 +76,10 @@ class _StubVenue:
         self._state_values = state_values
         self._orders = orders
         self._current_ts = 0
+        self.wait_calls: list[tuple[int, bool]] = []
 
     def wait_next(self, *, timeout_ns: int, include_order_resp: bool) -> int:
-        _ = (timeout_ns, include_order_resp)
+        self.wait_calls.append((timeout_ns, include_order_resp))
         self._current_ts = self._ts.pop(0)
         return self._rc.pop(0)
 
@@ -343,6 +348,70 @@ def test_market_branch_calls_canonical_boundary_not_update_market(
     assert captured == [(0, runner._core_cfg)]
 
 
+def test_wait_next_bootstrap_uses_include_order_resp_false_then_true_in_loop() -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 1],
+        ts_sequence=[1, 2, 3],
+        depth=_depth_snapshot(),
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert len(venue.wait_calls) >= 2
+    first_timeout_ns, first_include_order_resp = venue.wait_calls[0]
+    assert first_timeout_ns == MAX_TIMEOUT_NS
+    assert first_include_order_resp is False
+    assert all(include_order_resp is True for _, include_order_resp in venue.wait_calls[1:])
+
+
+def test_market_mapping_from_depth_snapshot_is_deterministic_golden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+
+    captured_market_events: list[MarketEvent] = []
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        _ = (state, configuration)
+        if isinstance(entry.event, MarketEvent):
+            captured_market_events.append(entry.event)
+
+    monkeypatch.setattr(
+        strategy_runner_module,
+        "process_event_entry",
+        _spy_process_event_entry,
+    )
+
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 1],
+        ts_sequence=[1, 2_000_000_000, 2_000_000_001],
+        depth=_depth_snapshot(),
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert len(captured_market_events) == 1
+    market_event = captured_market_events[0]
+    assert market_event.instrument == "BTC_USDC-PERPETUAL"
+    assert market_event.ts_ns_local == 2_000_000_000
+    assert market_event.ts_ns_exch == 2_000_000_000
+    assert market_event.book is not None
+    assert market_event.book.bids[0].price.value == 10.0
+    assert market_event.book.asks[0].price.value == 10.100000000000001
+    assert market_event.book.bids[0].quantity.value == 1.0
+    assert market_event.book.asks[0].quantity.value == 0.0
+
+
 def test_missing_core_cfg_fails_before_market_mutation() -> None:
     runner = object.__new__(HftStrategyRunner)
     runner.strategy_state = StrategyState(event_bus=EventBus(sinks=[]))
@@ -482,6 +551,66 @@ def test_snapshot_only_rc3_does_not_consume_canonical_cursor_position(
         "canonical": 0,
     }
     assert runner._event_stream_cursor.next_index == 0
+
+
+def test_rc2_rc3_paths_never_emit_fill_event_through_process_event_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+
+    calls = {"update_account": 0, "ingest_order_snapshots": 0}
+    emitted_fill_events = 0
+
+    def _spy_update_account(*args: object, **kwargs: object) -> None:
+        _ = (args, kwargs)
+        calls["update_account"] += 1
+
+    def _spy_ingest_order_snapshots(*args: object, **kwargs: object) -> None:
+        _ = (args, kwargs)
+        calls["ingest_order_snapshots"] += 1
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        nonlocal emitted_fill_events
+        _ = (state, configuration)
+        if isinstance(entry.event, FillEvent):
+            emitted_fill_events += 1
+
+    monkeypatch.setattr(runner.strategy_state, "update_account", _spy_update_account)
+    monkeypatch.setattr(
+        runner.strategy_state,
+        "ingest_order_snapshots",
+        _spy_ingest_order_snapshots,
+    )
+    monkeypatch.setattr(
+        strategy_runner_module,
+        "process_event_entry",
+        _spy_process_event_entry,
+    )
+
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 3, 1],
+        ts_sequence=[1, 2, 3, 4],
+        depth=_depth_snapshot(),
+        state_values=SimpleNamespace(
+            position=0.0,
+            balance=1000.0,
+            fee=0.0,
+            trading_volume=0.0,
+            trading_value=0.0,
+            num_trades=0,
+        ),
+        orders={},
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert emitted_fill_events == 0
+    assert calls["update_account"] == 1
+    assert calls["ingest_order_snapshots"] == 1
 
 
 def test_successful_new_dispatch_processes_order_submitted_before_mark_sent(
