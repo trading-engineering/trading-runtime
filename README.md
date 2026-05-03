@@ -202,12 +202,12 @@ tests/data/parts/
 Results are written to:
 
 ```
-tests/data/results/
+.runtime/local/results/
 ```
 
 Important: `trading_runtime/local/local.json` and `examples/local/local.json`
-now use cwd-relative `tests/data/...` paths. Run from the `core-runtime`
-repository root, or adjust config paths for your current working directory.
+use cwd-relative paths. Run from the `core-runtime` repository root, or adjust
+config paths for your current working directory.
 
 ---
 
@@ -336,10 +336,16 @@ Synthetic datasets are provided in:
 tests/data/parts/
 ```
 
-Result artifacts:
+Historical/sample result artifacts may exist in:
 
 ```
 tests/data/results/
+```
+
+Default local backtest outputs are now written to:
+
+```
+.runtime/local/results/
 ```
 
 Helper generation scripts:
