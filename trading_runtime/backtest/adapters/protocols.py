@@ -24,7 +24,6 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from trading_framework.core.domain.reject_reasons import RejectReason
 from trading_framework.core.domain.types import OrderIntent
 
 
@@ -83,7 +82,8 @@ class OrderSubmissionGateway(Protocol):
 
     Successful outbound submission may allow runtime to produce
     ``OrderSubmittedEvent`` for ``new`` intents under existing runner semantics.
-    Failure rows represent command rejection/dispatch errors only.
+    Failure rows represent command rejection/dispatch errors only, where
+    reason values are string constants from the ``RejectReason`` namespace.
 
     This protocol does not imply canonical execution-feedback authority,
     ``FillEvent`` ingress, or post-submission lifecycle migration.
@@ -92,6 +92,6 @@ class OrderSubmissionGateway(Protocol):
 
     def apply_intents(
         self, intents: list[OrderIntent]
-    ) -> list[tuple[OrderIntent, RejectReason]]:
+    ) -> list[tuple[OrderIntent, str]]:
         """Submit intents and return per-intent dispatch failures."""
 

@@ -30,13 +30,13 @@ from trading_framework.core.ports.venue_adapter import VenueAdapter
 from trading_framework.core.risk.risk_config import RiskConfig
 from trading_framework.core.risk.risk_engine import RejectedIntent, RiskEngine
 
+from trading_runtime.backtest.adapters.protocols import OrderSubmissionGateway
 from trading_runtime.backtest.engine.event_stream_cursor import EventStreamCursor
 from trading_runtime.core.events.sinks.file_recorder import FileRecorderSink
 
 if TYPE_CHECKING:
     from trading_framework.strategies.base import Strategy
 
-    from trading_runtime.backtest.adapters.execution import HftBacktestExecutionAdapter
     from trading_runtime.backtest.engine.hft_engine import HftEngineConfig
 
 
@@ -177,7 +177,7 @@ class HftStrategyRunner:
     def run(
         self,
         venue: VenueAdapter,
-        execution: HftBacktestExecutionAdapter,
+        execution: OrderSubmissionGateway,
         recorder: Any,
     ) -> None:
         """Run the backtest loop."""
