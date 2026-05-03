@@ -45,12 +45,23 @@ deterministic runtime environments.
 
 ---
 
+## 🏷 Naming Clarification (current transitional state)
+
+- Repository/folder name in the monorepo can be `core-runtime`.
+- Python import package in this repository is `trading_runtime`.
+- Distribution/project name in packaging metadata is `trading-runtime`.
+- Core package import remains `trading_framework`.
+- Package/directory rename alignment is planned separately and is not part of this phase.
+
+---
+
 ## 📁 Repository Structure
 
 ```
 .github/workflows/    CI pipelines (tests, Argo template deploy)
 argo/                 Argo workflow templates
 docs/                 Runtime design notes (implementation-facing)
+examples/             Alternative example runner/config/strategy paths
 scripts/              environment & build helper scripts
 trading_runtime/      Python runtime entrypoints
 tests/                deterministic test data & validation
@@ -67,6 +78,85 @@ trading_runtime/local/         Local execution mode
 trading_runtime/argo/          Argo workflow entrypoints
 trading_runtime/strategies/    Example strategies
 ```
+
+---
+
+## 🚀 Quick Start / Development Setup
+
+### Monorepo workspace layout (recommended for current development)
+
+If your workspace root contains sibling repositories (for example `core/` and
+`core-runtime/`), run tests from the workspace root:
+
+```bash
+python -m pytest -q core-runtime/tests
+python -m pytest -q core/tests/semantics
+```
+
+Optional editable installs from workspace root:
+
+```bash
+python -m pip install -e core
+python -m pip install -e core-runtime
+```
+
+### Standalone `core-runtime` repo root
+
+From the `core-runtime` repository root:
+
+```bash
+python -m pip install -e .
+python -m pytest -q tests
+./scripts/check.sh
+```
+
+If `trading_framework` is not already available in your environment, install
+`core` as a sibling editable package or ensure the pinned dependency resolves.
+
+`PYTHONPATH=.` can be used as a short-term development shortcut, but editable
+installation (`python -m pip install -e .`) is the preferred workflow.
+
+---
+
+## 🗺 Entrypoint Matrix
+
+| Mode | Entrypoint | Command shape | Notes |
+| --- | --- | --- | --- |
+| Local backtest | `trading_runtime/local/backtest.py` | `python -m trading_runtime.local.backtest --config trading_runtime/local/local.json` | Main local runner. |
+| Argo plan/run orchestration | `trading_runtime/backtest/runtime/entrypoint.py` | `python -m trading_runtime.backtest.runtime.entrypoint --config trading_runtime/argo/argo.json --plan` | Planner and sweep-context emitter for Argo flow. |
+| Sweep worker | `trading_runtime/backtest/runtime/run_sweep.py` | `python -m trading_runtime.backtest.runtime.run_sweep --context <path-to-sweep-json>` | Executes one sweep context (pod-level unit). |
+| Examples path | `examples/local/backtest.py` | `python examples/local/backtest.py --config examples/local/local.json` | Alternative example path; useful for reference but duplicates runtime patterns. |
+
+Use `trading_runtime/local/*` for local runtime development, `trading_runtime/backtest/runtime/*`
+for Argo workflow execution, and `examples/*` as a duplicate reference path.
+
+---
+
+## ⚠️ Local Config Path Caveat
+
+Current shipped local JSON configs are devcontainer-oriented and include
+absolute `/workspaces/core-runtime/...` paths.
+
+On a normal host machine, use one of the following:
+
+- run inside the devcontainer, or
+- copy the config and edit paths to local data/results locations.
+
+This README update does not change JSON files in-place.
+
+---
+
+## 📌 Current semantic status (transitional)
+
+`core-runtime` is currently usable as a transitional runtime around `core`:
+
+- canonical `MarketEvent`, `OrderSubmittedEvent`, and `ControlTimeEvent` paths are in use
+- post-submission order/fill progression remains on the snapshot-compatibility path
+- `FillEvent` runtime ingress remains deferred
+
+For adapter boundary context, see:
+
+- `docs/venue-adapter-abstraction-design-v1.md`
 
 ---
 
@@ -103,7 +193,7 @@ These files are used by:
 Run a deterministic local backtest:
 
 ```bash
-python trading_runtime/local/backtest.py \
+python -m trading_runtime.local.backtest \
   --config trading_runtime/local/local.json
 ```
 
@@ -118,6 +208,11 @@ Results are written to:
 ```
 tests/data/results/
 ```
+
+Important: `trading_runtime/local/local.json` and `examples/local/local.json`
+currently point to devcontainer absolute paths under
+`/workspaces/core-runtime/...`; adjust paths (or use devcontainer) when running
+on a regular host.
 
 ---
 
