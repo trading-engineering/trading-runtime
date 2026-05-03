@@ -135,10 +135,49 @@ for Argo workflow execution, and `examples/*` as a duplicate reference path.
 ## ⚠️ Local Config Path Caveat
 
 Current shipped local JSON configs use cwd-relative paths for
-`tests/data/...` inputs and outputs.
+`tests/data/...` inputs and `.runtime/...` outputs.
 
 Supported workflow: run local commands from the `core-runtime` repository root.
 If you run from a different cwd, adjust config paths accordingly.
+
+---
+
+## ✅ Current usability status (local hftbacktest path)
+
+The current local backtest path is verified and usable from the `core-runtime`
+repository root.
+
+Verified local workflow:
+
+```bash
+python -m pip install -e .
+python -m trading_runtime.local.backtest --config trading_runtime/local/local.json
+```
+
+Verified output location:
+
+```
+.runtime/local/results/events.json
+.runtime/local/results/stats.npz
+```
+
+Verified tests:
+
+```bash
+python -m pytest -q tests
+python -m pytest -q core-runtime/tests
+python -m pytest -q core/tests/semantics
+```
+
+Current caveats:
+
+- Paths are cwd-relative; supported workflow is running from `core-runtime` root.
+- hftbacktest timestamp-ordering warnings may appear from fixture ordering but do not fail the run.
+- `tests/data/results/` may contain historical/sample artifacts and is no longer the default local output location.
+- Naming remains transitional (`core-runtime` repo, `trading-runtime` distribution, `trading_runtime` imports, `trading_framework` core imports); rename/structure alignment is separate work.
+
+This status confirms local usability for the current local hftbacktest path; it
+does not imply full canonical Event Stream completion.
 
 ---
 
