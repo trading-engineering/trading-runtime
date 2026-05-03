@@ -11,7 +11,6 @@ from trading_framework.core.domain.configuration import CoreConfiguration
 from trading_framework.core.domain.processing import process_event_entry
 from trading_framework.core.domain.processing_order import (
     EventStreamEntry,
-    ProcessingPosition,
 )
 from trading_framework.core.domain.state import StrategyState
 from trading_framework.core.domain.types import (
@@ -31,6 +30,7 @@ from trading_framework.core.ports.venue_adapter import VenueAdapter
 from trading_framework.core.risk.risk_config import RiskConfig
 from trading_framework.core.risk.risk_engine import RejectedIntent, RiskEngine
 
+from trading_runtime.backtest.engine.event_stream_cursor import EventStreamCursor
 from trading_runtime.core.events.sinks.file_recorder import FileRecorderSink
 
 if TYPE_CHECKING:
@@ -78,14 +78,13 @@ class HftStrategyRunner:
         )
 
         self._next_send_ts_ns_local: int | None = None
-        self._next_canonical_processing_position_index: int = 0
+        self._event_stream_cursor = EventStreamCursor()
         self._last_injected_control_deadline_ns: int | None = None
 
     def _process_canonical_event(self, event: object) -> None:
+        position = self._event_stream_cursor.attempt_position()
         entry = EventStreamEntry(
-            position=ProcessingPosition(
-                index=self._next_canonical_processing_position_index,
-            ),
+            position=position,
             event=event,
         )
         process_event_entry(
@@ -93,7 +92,7 @@ class HftStrategyRunner:
             entry,
             configuration=self._core_cfg,
         )
-        self._next_canonical_processing_position_index += 1
+        self._event_stream_cursor.commit_success(position)
 
     def _build_event_bus(
         self,

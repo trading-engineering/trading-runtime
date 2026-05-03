@@ -25,6 +25,7 @@ from trading_framework.core.risk.risk_engine import GateDecision
 from trading_framework.strategies.base import Strategy
 
 import trading_runtime.backtest.engine.strategy_runner as strategy_runner_module
+from trading_runtime.backtest.engine.event_stream_cursor import EventStreamCursor
 from trading_runtime.backtest.engine.hft_engine import HftEngineConfig
 from trading_runtime.backtest.engine.strategy_runner import HftStrategyRunner
 
@@ -250,7 +251,7 @@ def test_process_market_event_routes_through_event_entry_with_core_configuration
     runner = object.__new__(HftStrategyRunner)
     runner.strategy_state = object()
     runner._core_cfg = _core_cfg()
-    runner._next_canonical_processing_position_index = 0
+    runner._event_stream_cursor = EventStreamCursor()
 
     captured: list[tuple[int, object]] = []
 
@@ -270,7 +271,7 @@ def test_process_market_event_routes_through_event_entry_with_core_configuration
     assert [idx for idx, _ in captured] == [0, 1]
     assert captured[0][1] is runner._core_cfg
     assert captured[1][1] is runner._core_cfg
-    assert runner._next_canonical_processing_position_index == 2
+    assert runner._event_stream_cursor.next_index == 2
 
 
 def test_first_canonical_event_uses_processing_position_zero(
@@ -279,7 +280,7 @@ def test_first_canonical_event_uses_processing_position_zero(
     runner = object.__new__(HftStrategyRunner)
     runner.strategy_state = object()
     runner._core_cfg = _core_cfg()
-    runner._next_canonical_processing_position_index = 0
+    runner._event_stream_cursor = EventStreamCursor()
 
     captured: list[int] = []
 
@@ -297,7 +298,7 @@ def test_first_canonical_event_uses_processing_position_zero(
     runner._process_canonical_market_event(_market_event(1))
 
     assert captured == [0]
-    assert runner._next_canonical_processing_position_index == 1
+    assert runner._event_stream_cursor.next_index == 1
 
 
 def test_market_branch_calls_canonical_boundary_not_update_market(
@@ -346,28 +347,28 @@ def test_missing_core_cfg_fails_before_market_mutation() -> None:
     runner = object.__new__(HftStrategyRunner)
     runner.strategy_state = StrategyState(event_bus=EventBus(sinks=[]))
     runner._core_cfg = None
-    runner._next_canonical_processing_position_index = 0
+    runner._event_stream_cursor = EventStreamCursor()
 
     with pytest.raises(ValueError, match="CoreConfiguration is required"):
         runner._process_canonical_market_event(_market_event(42))
 
     assert runner.strategy_state.market == {}
     assert runner.strategy_state._last_processing_position_index is None
-    assert runner._next_canonical_processing_position_index == 0
+    assert runner._event_stream_cursor.next_index == 0
 
 
 def test_invalid_core_cfg_type_fails_before_market_mutation() -> None:
     runner = object.__new__(HftStrategyRunner)
     runner.strategy_state = StrategyState(event_bus=EventBus(sinks=[]))
     runner._core_cfg = object()
-    runner._next_canonical_processing_position_index = 0
+    runner._event_stream_cursor = EventStreamCursor()
 
     with pytest.raises(TypeError, match="configuration must be CoreConfiguration or None"):
         runner._process_canonical_market_event(_market_event(42))
 
     assert runner.strategy_state.market == {}
     assert runner.strategy_state._last_processing_position_index is None
-    assert runner._next_canonical_processing_position_index == 0
+    assert runner._event_stream_cursor.next_index == 0
 
 
 def test_order_snapshot_branch_keeps_compatibility_path(
@@ -420,7 +421,7 @@ def test_order_snapshot_branch_keeps_compatibility_path(
 
     assert calls["update_account"] == 1
     assert calls["ingest_order_snapshots"] == 1
-    assert runner._next_canonical_processing_position_index == 0
+    assert runner._event_stream_cursor.next_index == 0
 
 
 def test_snapshot_only_rc3_does_not_consume_canonical_cursor_position(
@@ -480,7 +481,7 @@ def test_snapshot_only_rc3_does_not_consume_canonical_cursor_position(
         "ingest_order_snapshots": 1,
         "canonical": 0,
     }
-    assert runner._next_canonical_processing_position_index == 0
+    assert runner._event_stream_cursor.next_index == 0
 
 
 def test_successful_new_dispatch_processes_order_submitted_before_mark_sent(
@@ -695,7 +696,7 @@ def test_global_canonical_counter_shared_between_market_and_order_submitted(
         (0, "MarketEvent"),
         (1, "OrderSubmittedEvent"),
     ]
-    assert runner._next_canonical_processing_position_index == 2
+    assert runner._event_stream_cursor.next_index == 2
 
 
 def test_canonical_counter_increments_only_after_successful_canonical_processing(
@@ -704,7 +705,7 @@ def test_canonical_counter_increments_only_after_successful_canonical_processing
     runner = object.__new__(HftStrategyRunner)
     runner.strategy_state = object()
     runner._core_cfg = _core_cfg()
-    runner._next_canonical_processing_position_index = 0
+    runner._event_stream_cursor = EventStreamCursor()
 
     def _fail(*args: object, **kwargs: object) -> None:
         _ = (args, kwargs)
@@ -713,7 +714,7 @@ def test_canonical_counter_increments_only_after_successful_canonical_processing
     monkeypatch.setattr(strategy_runner_module, "process_event_entry", _fail)
     with pytest.raises(RuntimeError, match="boom"):
         runner._process_canonical_market_event(_market_event(1))
-    assert runner._next_canonical_processing_position_index == 0
+    assert runner._event_stream_cursor.next_index == 0
 
     called = {"count": 0}
 
@@ -724,7 +725,7 @@ def test_canonical_counter_increments_only_after_successful_canonical_processing
     monkeypatch.setattr(strategy_runner_module, "process_event_entry", _ok)
     runner._process_canonical_market_event(_market_event(2))
     assert called["count"] == 1
-    assert runner._next_canonical_processing_position_index == 1
+    assert runner._event_stream_cursor.next_index == 1
 
 
 def test_control_time_event_injected_when_scheduled_deadline_is_realized(
@@ -929,7 +930,7 @@ def test_global_canonical_counter_shared_with_control_time_market_and_submitted(
         (1, "ControlTimeEvent"),
         (2, "OrderSubmittedEvent"),
     ]
-    assert runner._next_canonical_processing_position_index == 3
+    assert runner._event_stream_cursor.next_index == 3
 
 
 def test_fallback_second_boundary_wakeup_behavior_unchanged(
