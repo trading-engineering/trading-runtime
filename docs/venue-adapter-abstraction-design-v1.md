@@ -45,10 +45,10 @@ This note is implementation-facing and must stay consistent with:
 
 Current runtime anchors:
 
-- `core-runtime/trading_runtime/backtest/adapters/venue.py`
-- `core-runtime/trading_runtime/backtest/adapters/execution.py`
-- `core-runtime/trading_runtime/backtest/engine/strategy_runner.py`
-- `core-runtime/trading_runtime/backtest/engine/event_stream_cursor.py`
+- `core-runtime/core_runtime/backtest/adapters/venue.py`
+- `core-runtime/core_runtime/backtest/adapters/execution.py`
+- `core-runtime/core_runtime/backtest/engine/strategy_runner.py`
+- `core-runtime/core_runtime/backtest/engine/event_stream_cursor.py`
 
 ---
 

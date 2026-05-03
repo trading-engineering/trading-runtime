@@ -27,7 +27,7 @@ def test_exception():
 
 def test_package_import():
     """
-    Optional: verify that core_runtime and trading_runtime can be imported.
+    Optional: verify that core_runtime can be imported.
     Remove if not needed.
     """
     try:

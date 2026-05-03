@@ -7,7 +7,7 @@ python -m pip install -r requirements-dev.txt
 
 # If this repo is a Python package, install it in editable mode
 if [ -f pyproject.toml ] || [ -f setup.py ] || [ -f setup.cfg ]; then
-  echo "[post-create] Installing trading-runtime in editable mode..."
+  echo "[post-create] Installing Core Runtime in editable mode..."
   python -m pip install -e .[dev]
 fi
 

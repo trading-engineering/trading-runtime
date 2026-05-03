@@ -9,5 +9,5 @@ spec:
     parameters:
       - name: git_branch
         value: "${GIT_BRANCH}"
-      - name: trading_runtime_commit
+      - name: core_runtime_commit
         value: "${RUNTIME_COMMIT}"

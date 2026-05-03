@@ -1,11 +1,11 @@
-# Trading Runtime
+# Core Runtime
 
-![CI](https://github.com/trading-engineering/trading-runtime/actions/workflows/tests.yaml/badge.svg)
+![CI](https://github.com/TradingChassis/core-runtime/actions/workflows/tests.yaml/badge.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 Runtime execution layer and orchestration environment for the
-[trading-framework](https://github.com/trading-engineering/trading-framework).
+[Core (`tradingchassis-core`)](https://github.com/TradingChassis/core).
 
 This repository provides:
 
@@ -19,9 +19,9 @@ This repository provides:
 
 ## 🧠 What is this?
 
-`trading-runtime` is the execution and orchestration layer built on top of `trading-framework`.
+`core-runtime` is the execution and orchestration layer built on top of `tradingchassis-core`.
 
-While `trading-framework` implements the deterministic trading framework,
+While Core (`tradingchassis-core`) implements the deterministic trading core,
 this repository focuses on:
 
 - how strategies are executed
@@ -33,11 +33,11 @@ It intentionally contains no domain framework logic.
 
 ---
 
-## 🧩 Relationship to trading-framework
+## 🧩 Relationship to Core
 
 ```
-trading-framework  → core framework, backtesting engine, domain logic
-trading-runtime    → executing entrypoints, runtime configs, orchestration
+tradingchassis-core          → core framework, backtesting engine, domain logic
+tradingchassis-core-runtime  → executing entrypoints, runtime configs, orchestration
 ```
 
 The framework is consumed as a pinned Git dependency to guarantee
@@ -45,14 +45,13 @@ deterministic runtime environments.
 
 ---
 
-## 🏷 Naming Clarification (current transitional state)
+## 🏷 Naming Clarification
 
 - Repository/folder name in the monorepo can be `core-runtime`.
 - Python import package in this repository is `core_runtime`.
-- Distribution/project name in packaging metadata is `trading-runtime`.
-- Legacy package import `trading_runtime` remains available as a compatibility shim.
-- Core package canonical import is `tradingchassis_core` (`trading_framework` is compatibility/deprecated).
-- Package/directory rename alignment is planned separately and is not part of this phase.
+- Distribution/project name in packaging metadata is `tradingchassis-core-runtime`.
+- Core package canonical import is `tradingchassis_core`.
+- Core distribution/project name is `tradingchassis-core`.
 
 ---
 
@@ -175,7 +174,7 @@ Current caveats:
 - Paths are cwd-relative; supported workflow is running from `core-runtime` root.
 - hftbacktest timestamp-ordering warnings may appear from fixture ordering but do not fail the run.
 - `tests/data/results/` may contain historical/sample artifacts and is no longer the default local output location.
-- Naming remains transitional (`core-runtime` repo, `trading-runtime` distribution, `core_runtime` canonical imports, `trading_runtime` compatibility shim, `tradingchassis_core` canonical core imports).
+- Naming is aligned (`core-runtime` repo, `tradingchassis-core-runtime` distribution, `core_runtime` import package, `tradingchassis_core` core import package).
 
 This status confirms local usability for the current local hftbacktest path; it
 does not imply full canonical Event Stream completion.
@@ -198,12 +197,12 @@ For adapter boundary context, see:
 
 ## 📌 Dependency Pinning & Reproducibility
 
-The `trading-framework` dependency is pinned by commit SHA.
+The `tradingchassis-core` dependency is pinned by commit SHA.
 
 Create a `.env` file:
 
 ```bash
-TRADING_FRAMEWORK_COMMIT=<commit-sha>
+TRADINGCHASSIS_CORE_COMMIT=<commit-sha>
 ```
 
 Generate reproducible environments:
@@ -278,13 +277,13 @@ argo/workflowtemplate-backtest.yaml
 
 ### 🐳 Runtime Image Build & Push
 
-`workflowtemplate-build-push-ghcr.yaml` builds the trading-runtime Docker image and pushes it to
+`workflowtemplate-build-push-ghcr.yaml` builds the Core Runtime Docker image and pushes it to
 GitHub Container Registry (GHCR).
 
 This image contains:
 
 - Python dependencies and entrypoints
-- trading-framework and trading-runtime commit SHA
+- tradingchassis-core and core-runtime commit SHA
 - strategies and configs
 
 It acts as an immutable and deterministic runtime environment for all backtests.
@@ -362,7 +361,7 @@ Without this secret, the workflow cannot authenticate against GHCR, and Kubernet
 
 | Script                    | Purpose                                         |
 | ------------------------- | ----------------------------------------------- |
-| `compile-requirements.sh` | Pins trading-framework and resolves dependencies |
+| `compile-requirements.sh` | Pins tradingchassis-core and resolves dependencies |
 | `post-create.sh`          | Dev container bootstrap                         |
 | `check.sh`                | Local validation helpers                        |
 
@@ -430,7 +429,7 @@ This repository includes:
 
 It does not include:
 
-- trading framework internals
+- Core internals
 - specific strategy research logic
 
 ---

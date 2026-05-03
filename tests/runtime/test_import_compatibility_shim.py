@@ -3,7 +3,7 @@ from __future__ import annotations
 import warnings
 
 
-def test_legacy_and_new_nested_runtime_modules_share_identity() -> None:
+def test_nested_runtime_modules_share_identity_across_import_sites() -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
         import core_runtime.backtest.engine.strategy_runner as old_strategy_runner
@@ -16,7 +16,7 @@ def test_legacy_and_new_nested_runtime_modules_share_identity() -> None:
     assert old_debug_strategy is new_debug_strategy
 
 
-def test_legacy_and_new_runtime_symbols_share_identity() -> None:
+def test_runtime_symbols_share_identity_across_import_sites() -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
         from core_runtime.backtest.engine.strategy_runner import HftStrategyRunner as OldRunner

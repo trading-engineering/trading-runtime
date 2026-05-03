@@ -230,7 +230,7 @@ class SweepMetadataWriter:
                 pyproject_path
             )
 
-        distribution_name = name_from_pyproject or "trading-framework"
+        distribution_name = name_from_pyproject or "tradingchassis-core"
 
         version: str | None
         source: str

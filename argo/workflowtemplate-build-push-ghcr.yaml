@@ -7,14 +7,14 @@ spec:
   arguments:
     parameters:
       - name: image_repo
-        value: ghcr.io/trading-engineering/trading-runtime
+        value: ghcr.io/trading-engineering/tradingchassis-core-runtime
 
       - name: git_branch
         description: "Branch name (for tagging only)"
         value: main
 
-      - name: trading_runtime_commit
-        description: "Exact commit SHA of trading-runtime"
+      - name: core_runtime_commit
+        description: "Exact commit SHA of core-runtime"
         value: ""
 
   templates:
@@ -27,10 +27,10 @@ spec:
 
           IMAGE_REPO="{{workflow.parameters.image_repo}}"
           GIT_BRANCH="{{workflow.parameters.git_branch}}"
-          RUNTIME_COMMIT="{{workflow.parameters.trading_runtime_commit}}"
+          RUNTIME_COMMIT="{{workflow.parameters.core_runtime_commit}}"
 
           if [ -z "$RUNTIME_COMMIT" ]; then
-            echo "> trading_runtime_commit must be set"
+            echo "> core_runtime_commit must be set"
             exit 1
           fi
 

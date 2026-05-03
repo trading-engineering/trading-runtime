@@ -16,7 +16,7 @@ spec:
     parameters:
       - name: image_repo
         description: "Container image repo"
-        value: ghcr.io/trading-engineering/trading-runtime
+        value: ghcr.io/trading-engineering/tradingchassis-core-runtime
 
       - name: image_tag
         description: "Container image tag to run (recommended: commit SHA)"
@@ -24,7 +24,7 @@ spec:
 
       - name: experiment_config
         description: "Path to experiment JSON inside the container"
-        value: /usr/local/lib/python3.11/site-packages/trading_runtime/argo/argo.json
+        value: /usr/local/lib/python3.11/site-packages/core_runtime/argo/argo.json
 
       - name: scratch_root
         description: "Scratch root inside the container"
@@ -104,7 +104,7 @@ spec:
 
         command: [python, -m]
         args:
-          - trading_runtime.backtest.runtime.entrypoint
+          - core_runtime.backtest.runtime.entrypoint
           - --config
           - "{{workflow.parameters.experiment_config}}"
           - --run
@@ -156,7 +156,7 @@ spec:
 
         command: [python, -m]
         args:
-          - trading_runtime.backtest.runtime.run_sweep
+          - core_runtime.backtest.runtime.run_sweep
           - --context
           - "{{inputs.parameters.sweep-path}}"
           - --scratch-root
@@ -204,7 +204,7 @@ spec:
 
         command: [python, -m]
         args:
-          - trading_runtime.backtest.runtime.segment_finalize_entrypoint
+          - core_runtime.backtest.runtime.segment_finalize_entrypoint
 
           - "--experiment-id"
           - "{{inputs.parameters.experiment-id}}"
@@ -268,7 +268,7 @@ spec:
 
         command: [python, -m]
         args:
-          - trading_runtime.backtest.runtime.experiment_finalize_entrypoint
+          - core_runtime.backtest.runtime.experiment_finalize_entrypoint
 
           - "--experiment-id"
           - "{{inputs.parameters.experiment-id}}"
