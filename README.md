@@ -50,10 +50,15 @@ deterministic runtime environments.
 ```
 .github/workflows/    CI pipelines (tests, Argo template deploy)
 argo/                 Argo workflow templates
+docs/                 Runtime design notes (implementation-facing)
 scripts/              environment & build helper scripts
 trading_runtime/      Python runtime entrypoints
 tests/                deterministic test data & validation
 ```
+
+Implementation-facing design notes:
+
+- `docs/venue-adapter-abstraction-design-v1.md`
 
 ### Key runtime modules
 
