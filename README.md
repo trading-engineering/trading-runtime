@@ -134,15 +134,11 @@ for Argo workflow execution, and `examples/*` as a duplicate reference path.
 
 ## ⚠️ Local Config Path Caveat
 
-Current shipped local JSON configs are devcontainer-oriented and include
-absolute `/workspaces/core-runtime/...` paths.
+Current shipped local JSON configs use cwd-relative paths for
+`tests/data/...` inputs and outputs.
 
-On a normal host machine, use one of the following:
-
-- run inside the devcontainer, or
-- copy the config and edit paths to local data/results locations.
-
-This README update does not change JSON files in-place.
+Supported workflow: run local commands from the `core-runtime` repository root.
+If you run from a different cwd, adjust config paths accordingly.
 
 ---
 
@@ -210,9 +206,8 @@ tests/data/results/
 ```
 
 Important: `trading_runtime/local/local.json` and `examples/local/local.json`
-currently point to devcontainer absolute paths under
-`/workspaces/core-runtime/...`; adjust paths (or use devcontainer) when running
-on a regular host.
+now use cwd-relative `tests/data/...` paths. Run from the `core-runtime`
+repository root, or adjust config paths for your current working directory.
 
 ---
 
