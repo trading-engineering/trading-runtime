@@ -273,6 +273,33 @@ def test_process_market_event_routes_through_event_entry_with_core_configuration
     assert runner._next_canonical_processing_position_index == 2
 
 
+def test_first_canonical_event_uses_processing_position_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = object.__new__(HftStrategyRunner)
+    runner.strategy_state = object()
+    runner._core_cfg = _core_cfg()
+    runner._next_canonical_processing_position_index = 0
+
+    captured: list[int] = []
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        _ = state
+        assert configuration is runner._core_cfg
+        captured.append(entry.position.index)
+
+    monkeypatch.setattr(
+        strategy_runner_module,
+        "process_event_entry",
+        _spy_process_event_entry,
+    )
+
+    runner._process_canonical_market_event(_market_event(1))
+
+    assert captured == [0]
+    assert runner._next_canonical_processing_position_index == 1
+
+
 def test_market_branch_calls_canonical_boundary_not_update_market(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -393,6 +420,67 @@ def test_order_snapshot_branch_keeps_compatibility_path(
 
     assert calls["update_account"] == 1
     assert calls["ingest_order_snapshots"] == 1
+    assert runner._next_canonical_processing_position_index == 0
+
+
+def test_snapshot_only_rc3_does_not_consume_canonical_cursor_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+
+    calls = {"update_account": 0, "ingest_order_snapshots": 0, "canonical": 0}
+
+    def _spy_update_account(*args: object, **kwargs: object) -> None:
+        _ = (args, kwargs)
+        calls["update_account"] += 1
+
+    def _spy_ingest_order_snapshots(*args: object, **kwargs: object) -> None:
+        _ = (args, kwargs)
+        calls["ingest_order_snapshots"] += 1
+
+    def _spy_process_event_entry(*args: object, **kwargs: object) -> None:
+        _ = (args, kwargs)
+        calls["canonical"] += 1
+
+    monkeypatch.setattr(runner.strategy_state, "update_account", _spy_update_account)
+    monkeypatch.setattr(
+        runner.strategy_state,
+        "ingest_order_snapshots",
+        _spy_ingest_order_snapshots,
+    )
+    monkeypatch.setattr(
+        strategy_runner_module,
+        "process_event_entry",
+        _spy_process_event_entry,
+    )
+
+    venue = _StubVenue(
+        rc_sequence=[0, 3, 1],
+        ts_sequence=[1, 2, 3],
+        state_values=SimpleNamespace(
+            position=0.0,
+            balance=1000.0,
+            fee=0.0,
+            trading_volume=0.0,
+            trading_value=0.0,
+            num_trades=0,
+        ),
+        orders={},
+    )
+
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert calls == {
+        "update_account": 1,
+        "ingest_order_snapshots": 1,
+        "canonical": 0,
+    }
+    assert runner._next_canonical_processing_position_index == 0
 
 
 def test_successful_new_dispatch_processes_order_submitted_before_mark_sent(
