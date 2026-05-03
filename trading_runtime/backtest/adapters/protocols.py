@@ -11,18 +11,21 @@ It is intentionally implementation-light:
 Current ``HftBacktestVenueAdapter`` already structurally conforms to all
 protocols defined here.
 
-Notes on intentionally deferred capabilities:
+Notes on capability scope:
 
-- ``OrderSubmissionGateway`` is excluded in this slice until additional
-  characterization covers concrete hftbacktest execution adapter behavior.
-- ``ExecutionFeedbackRecordSource`` is excluded in this slice because
-  execution-feedback capability remains deferred and gated by existing
+- ``OrderSubmissionGateway`` is included as an outbound command-submission
+  typing seam only.
+- ``ExecutionFeedbackRecordSource`` remains excluded in this slice because
+  execution-feedback capability is deferred and gated by existing
   runtime/source contracts.
 """
 
 from __future__ import annotations
 
 from typing import Any, Protocol
+
+from trading_framework.core.domain.reject_reasons import RejectReason
+from trading_framework.core.domain.types import OrderIntent
 
 
 class VenueEventWaiter(Protocol):
@@ -70,4 +73,25 @@ class AccountSnapshotSource(Protocol):
 
     def read_orders_snapshot(self) -> tuple[Any, Any]:
         """Return (state_values, orders) from current snapshot boundary."""
+
+
+class OrderSubmissionGateway(Protocol):
+    """Outbound order command submission capability.
+
+    This protocol is strictly about dispatching outbound order commands and
+    reporting dispatch failures. It is not an execution-feedback source.
+
+    Successful outbound submission may allow runtime to produce
+    ``OrderSubmittedEvent`` for ``new`` intents under existing runner semantics.
+    Failure rows represent command rejection/dispatch errors only.
+
+    This protocol does not imply canonical execution-feedback authority,
+    ``FillEvent`` ingress, or post-submission lifecycle migration.
+    ``ExecutionFeedbackRecordSource`` remains a separate deferred capability.
+    """
+
+    def apply_intents(
+        self, intents: list[OrderIntent]
+    ) -> list[tuple[OrderIntent, RejectReason]]:
+        """Submit intents and return per-intent dispatch failures."""
 
