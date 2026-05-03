@@ -331,7 +331,7 @@ tornado==6.5.4
     # via bokeh
 tqdm==4.67.3
     # via panel
-trading-framework @ git+https://github.com/TradingChassis/core.git@d36347965f33e2735d233daa59fd8e5840604523
+trading-framework @ git+https://github.com/TradingChassis/core.git@686dd949e74f6cd482e3e96236669058d9484899
     # via -r _git_deps.in
 typing-extensions==4.15.0
     # via
