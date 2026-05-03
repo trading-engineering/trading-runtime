@@ -8,17 +8,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from trading_runtime.backtest.engine.engine_base import BacktestResult
+    from core_runtime.backtest.engine.engine_base import BacktestResult
 
-from trading_framework.core.risk.risk_config import RiskConfig
-from trading_framework.strategies.strategy_config import StrategyConfig
+from tradingchassis_core.core.risk.risk_config import RiskConfig
+from tradingchassis_core.strategies.strategy_config import StrategyConfig
 
-from trading_runtime.backtest.engine.hft_engine import (
+from core_runtime.backtest.engine.hft_engine import (
     HftBacktestConfig,
     HftBacktestEngine,
     HftEngineConfig,
 )
-from trading_runtime.backtest.runtime.core_configuration_mapper import (
+from core_runtime.backtest.runtime.core_configuration_mapper import (
     build_core_configuration_from_run_config,
 )
 

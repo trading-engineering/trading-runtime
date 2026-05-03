@@ -3,9 +3,9 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "trading-runtime"
+name = "core-runtime"
 version = "0.1.0"
-description = "Runtime execution and Kubernetes orchestration layer for the trading-framework with reproducible environments and deterministic backtesting."
+description = "Runtime execution and Kubernetes orchestration layer for the core with reproducible environments and deterministic backtesting."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "tradingeng@protonmail.com" }]
@@ -37,13 +37,13 @@ dev = [
 # Explicit package discovery
 # --------------------------------------------------
 [tool.setuptools.packages.find]
-include = ["trading_runtime*"]
+include = ["core_runtime*", "trading_runtime*"]
 
 # --------------------------------------------------
 # Include runtime assets
 # --------------------------------------------------
 [tool.setuptools.package-data]
-trading_runtime = ["**/*"]
+core_runtime = ["**/*"]
 
 [tool.setuptools]
 include-package-data = true
@@ -82,5 +82,5 @@ ignore_errors = true
 # Import Linter
 # --------------------------------------------------
 [tool.importlinter]
-root_package = "trading_runtime"
+root_package = "core_runtime"
 include_external_packages = true

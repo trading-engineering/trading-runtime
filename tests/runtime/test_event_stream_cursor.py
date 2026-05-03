@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import pytest
-from trading_framework.core.domain.processing_order import ProcessingPosition
+from tradingchassis_core.core.domain.processing_order import ProcessingPosition
 
-from trading_runtime.backtest.engine.event_stream_cursor import EventStreamCursor
+from core_runtime.backtest.engine.event_stream_cursor import EventStreamCursor
 
 
 def test_event_stream_cursor_starts_at_zero() -> None:

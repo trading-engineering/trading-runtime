@@ -7,13 +7,13 @@ from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from trading_framework.core.domain.configuration import CoreConfiguration
-from trading_framework.core.domain.processing import process_event_entry
-from trading_framework.core.domain.processing_order import (
+from tradingchassis_core.core.domain.configuration import CoreConfiguration
+from tradingchassis_core.core.domain.processing import process_event_entry
+from tradingchassis_core.core.domain.processing_order import (
     EventStreamEntry,
 )
-from trading_framework.core.domain.state import StrategyState
-from trading_framework.core.domain.types import (
+from tradingchassis_core.core.domain.state import StrategyState
+from tradingchassis_core.core.domain.types import (
     BookLevel,
     BookPayload,
     ControlTimeEvent,
@@ -24,20 +24,20 @@ from trading_framework.core.domain.types import (
     Price,
     Quantity,
 )
-from trading_framework.core.events.event_bus import EventBus
-from trading_framework.core.events.sinks.sink_logging import LoggingEventSink
-from trading_framework.core.ports.venue_adapter import VenueAdapter
-from trading_framework.core.risk.risk_config import RiskConfig
-from trading_framework.core.risk.risk_engine import RejectedIntent, RiskEngine
+from tradingchassis_core.core.events.event_bus import EventBus
+from tradingchassis_core.core.events.sinks.sink_logging import LoggingEventSink
+from tradingchassis_core.core.ports.venue_adapter import VenueAdapter
+from tradingchassis_core.core.risk.risk_config import RiskConfig
+from tradingchassis_core.core.risk.risk_engine import RejectedIntent, RiskEngine
 
-from trading_runtime.backtest.adapters.protocols import OrderSubmissionGateway
-from trading_runtime.backtest.engine.event_stream_cursor import EventStreamCursor
-from trading_runtime.core.events.sinks.file_recorder import FileRecorderSink
+from core_runtime.backtest.adapters.protocols import OrderSubmissionGateway
+from core_runtime.backtest.engine.event_stream_cursor import EventStreamCursor
+from core_runtime.core.events.sinks.file_recorder import FileRecorderSink
 
 if TYPE_CHECKING:
-    from trading_framework.strategies.base import Strategy
+    from tradingchassis_core.strategies.base import Strategy
 
-    from trading_runtime.backtest.engine.hft_engine import HftEngineConfig
+    from core_runtime.backtest.engine.hft_engine import HftEngineConfig
 
 
 MAX_TIMEOUT_NS = 1 << 62  # Effectively "wait forever" without a heartbeat

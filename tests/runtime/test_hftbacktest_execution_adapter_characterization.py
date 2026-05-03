@@ -13,8 +13,8 @@ import inspect
 from dataclasses import dataclass, field
 from typing import Any
 
-from trading_framework.core.domain.reject_reasons import RejectReason
-from trading_framework.core.domain.types import (
+from tradingchassis_core.core.domain.reject_reasons import RejectReason
+from tradingchassis_core.core.domain.types import (
     CancelOrderIntent,
     NewOrderIntent,
     Price,
@@ -22,7 +22,7 @@ from trading_framework.core.domain.types import (
     ReplaceOrderIntent,
 )
 
-from trading_runtime.backtest.adapters.execution import (
+from core_runtime.backtest.adapters.execution import (
     HftBacktestExecutionAdapter,
     _to_i64_order_id,
 )

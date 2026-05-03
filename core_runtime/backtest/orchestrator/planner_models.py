@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from trading_runtime.backtest.orchestrator.sweeps import SweepPlan
+    from core_runtime.backtest.orchestrator.sweeps import SweepPlan
 
 
 @dataclass(frozen=True, slots=True)

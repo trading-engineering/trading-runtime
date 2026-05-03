@@ -8,9 +8,9 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-from trading_runtime.backtest.io.s3_adapter import OCIObjectStorageS3Shim
-from trading_runtime.backtest.runtime.context import ExperimentContext
-from trading_runtime.backtest.runtime.prometheus_metrics import PrometheusMetricsClient
+from core_runtime.backtest.io.s3_adapter import OCIObjectStorageS3Shim
+from core_runtime.backtest.runtime.context import ExperimentContext
+from core_runtime.backtest.runtime.prometheus_metrics import PrometheusMetricsClient
 
 LOGGER = logging.getLogger(__name__)
 

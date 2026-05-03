@@ -8,12 +8,12 @@ from typing import Any
 
 import pytest
 
-from trading_runtime.backtest.adapters.execution import (
+from core_runtime.backtest.adapters.execution import (
     HftBacktestExecutionAdapter,
     _to_i64_order_id,
 )
-from trading_runtime.backtest.adapters.venue import HftBacktestVenueAdapter
-from trading_runtime.backtest.engine.strategy_runner import HftStrategyRunner
+from core_runtime.backtest.adapters.venue import HftBacktestVenueAdapter
+from core_runtime.backtest.engine.strategy_runner import HftStrategyRunner
 
 hftbacktest = pytest.importorskip("hftbacktest")
 from hftbacktest import types as hbt_types  # type: ignore  # noqa: E402

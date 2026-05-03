@@ -13,20 +13,20 @@ from hftbacktest import (
 )
 
 if TYPE_CHECKING:
-    from trading_framework.core.domain.configuration import CoreConfiguration
-    from trading_framework.core.risk.risk_config import RiskConfig
+    from tradingchassis_core.core.domain.configuration import CoreConfiguration
+    from tradingchassis_core.core.risk.risk_config import RiskConfig
 
-from trading_framework.strategies.base import Strategy
-from trading_framework.strategies.strategy_config import StrategyConfig
+from tradingchassis_core.strategies.base import Strategy
+from tradingchassis_core.strategies.strategy_config import StrategyConfig
 
-from trading_runtime.backtest.adapters.execution import HftBacktestExecutionAdapter
-from trading_runtime.backtest.adapters.venue import HftBacktestVenueAdapter
-from trading_runtime.backtest.engine.engine_base import (
+from core_runtime.backtest.adapters.execution import HftBacktestExecutionAdapter
+from core_runtime.backtest.adapters.venue import HftBacktestVenueAdapter
+from core_runtime.backtest.engine.engine_base import (
     BacktestConfig,
     BacktestEngine,
     BacktestResult,
 )
-from trading_runtime.backtest.engine.strategy_runner import HftStrategyRunner
+from core_runtime.backtest.engine.strategy_runner import HftStrategyRunner
 
 
 # pylint: disable=too-many-instance-attributes

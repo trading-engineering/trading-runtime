@@ -15,9 +15,9 @@ CORE_RUNTIME_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_ROOT = CORE_RUNTIME_ROOT.parent
 
 ADAPTER_FILES = [
-    CORE_RUNTIME_ROOT / "trading_runtime/backtest/adapters/venue.py",
-    CORE_RUNTIME_ROOT / "trading_runtime/backtest/adapters/execution.py",
-    CORE_RUNTIME_ROOT / "trading_runtime/backtest/adapters/protocols.py",
+    CORE_RUNTIME_ROOT / "core_runtime/backtest/adapters/venue.py",
+    CORE_RUNTIME_ROOT / "core_runtime/backtest/adapters/execution.py",
+    CORE_RUNTIME_ROOT / "core_runtime/backtest/adapters/protocols.py",
 ]
 
 
@@ -61,7 +61,7 @@ def test_adapters_do_not_import_or_construct_fill_event() -> None:
 
 
 def test_core_production_package_does_not_import_trading_runtime() -> None:
-    core_pkg = WORKSPACE_ROOT / "core/trading_framework"
+    core_pkg = WORKSPACE_ROOT / "core/tradingchassis_core"
     if not core_pkg.exists():
         pytest.skip(
             f"core package not present in this checkout layout: {core_pkg}"
@@ -70,6 +70,8 @@ def test_core_production_package_does_not_import_trading_runtime() -> None:
     patterns = [
         r"^\s*import\s+trading_runtime(\.|$)",
         r"^\s*from\s+trading_runtime(\.|\s+import\b)",
+        r"^\s*import\s+core_runtime(\.|$)",
+        r"^\s*from\s+core_runtime(\.|\s+import\b)",
     ]
 
     for path in core_pkg.rglob("*.py"):
@@ -77,7 +79,7 @@ def test_core_production_package_does_not_import_trading_runtime() -> None:
 
 
 def test_protocols_does_not_define_execution_feedback_record_source_yet() -> None:
-    protocols_py = CORE_RUNTIME_ROOT / "trading_runtime/backtest/adapters/protocols.py"
+    protocols_py = CORE_RUNTIME_ROOT / "core_runtime/backtest/adapters/protocols.py"
     patterns = [
         r"^\s*class\s+ExecutionFeedbackRecordSource\b",
         r"^\s*ExecutionFeedbackRecordSource\s*=",

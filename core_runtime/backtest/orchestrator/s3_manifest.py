@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 
-from trading_runtime.backtest.io.s3_adapter import OCIObjectStorageS3Shim
-from trading_runtime.backtest.orchestrator.manifest import DataFileMeta, DatasetManifest
+from core_runtime.backtest.io.s3_adapter import OCIObjectStorageS3Shim
+from core_runtime.backtest.orchestrator.manifest import DataFileMeta, DatasetManifest
 
 
 class S3DatasetManifest(DatasetManifest):

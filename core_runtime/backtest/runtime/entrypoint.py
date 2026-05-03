@@ -8,17 +8,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from trading_runtime.backtest.orchestrator.planner_models import ExperimentPlan
+    from core_runtime.backtest.orchestrator.planner_models import ExperimentPlan
 
-from trading_runtime.backtest.orchestrator.planner import plan_experiment
-from trading_runtime.backtest.orchestrator.s3_manifest import S3DatasetManifest
-from trading_runtime.backtest.orchestrator.summary import (
+from core_runtime.backtest.orchestrator.planner import plan_experiment
+from core_runtime.backtest.orchestrator.s3_manifest import S3DatasetManifest
+from core_runtime.backtest.orchestrator.summary import (
     print_experiment_summary,
     summarize_experiment,
 )
-from trading_runtime.backtest.orchestrator.sweeps import RangeSpec
-from trading_runtime.backtest.runtime.context import SweepContext
-from trading_runtime.backtest.runtime.core_configuration_mapper import (
+from core_runtime.backtest.orchestrator.sweeps import RangeSpec
+from core_runtime.backtest.runtime.context import SweepContext
+from core_runtime.backtest.runtime.core_configuration_mapper import (
     build_core_configuration_from_run_config,
 )
 

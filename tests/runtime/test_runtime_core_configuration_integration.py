@@ -6,9 +6,9 @@ import types
 from pathlib import Path
 
 import pytest
-from trading_framework.core.domain.configuration import CoreConfiguration
+from tradingchassis_core.core.domain.configuration import CoreConfiguration
 
-from trading_runtime.local.backtest import load_config
+from core_runtime.local.backtest import load_config
 
 
 def _repo_root() -> Path:
@@ -54,7 +54,7 @@ def _install_oci_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_local_loader_fails_early_when_core_missing(tmp_path: Path) -> None:
-    sample_path = _repo_root() / "trading_runtime/local/local.json"
+    sample_path = _repo_root() / "core_runtime/local/local.json"
     config = _load_sample_config(sample_path)
     config.pop("core", None)
 
@@ -66,7 +66,7 @@ def test_local_loader_fails_early_when_core_missing(tmp_path: Path) -> None:
 
 
 def test_local_loader_succeeds_with_valid_core() -> None:
-    sample_path = _repo_root() / "trading_runtime/local/local.json"
+    sample_path = _repo_root() / "core_runtime/local/local.json"
     cfg = load_config(str(sample_path))
 
     assert isinstance(cfg.core_cfg, CoreConfiguration)
@@ -79,9 +79,9 @@ def test_argo_entrypoint_rejects_invalid_run_config_before_planning(
 ) -> None:
     _install_oci_stubs(monkeypatch)
 
-    from trading_runtime.backtest.runtime.entrypoint import main as argo_entrypoint_main
+    from core_runtime.backtest.runtime.entrypoint import main as argo_entrypoint_main
 
-    sample_path = _repo_root() / "trading_runtime/argo/argo.json"
+    sample_path = _repo_root() / "core_runtime/argo/argo.json"
     config = _load_sample_config(sample_path)
     config.pop("core", None)
 
@@ -109,7 +109,7 @@ def test_argo_sweep_worker_rejects_context_missing_core(
 ) -> None:
     _install_oci_stubs(monkeypatch)
 
-    from trading_runtime.backtest.runtime.run_sweep import main as run_sweep_main
+    from core_runtime.backtest.runtime.run_sweep import main as run_sweep_main
 
     context = {
         "experiment_id": "exp-1",
@@ -156,12 +156,12 @@ def test_argo_emit_includes_core_section_in_sweep_context(
 ) -> None:
     _install_oci_stubs(monkeypatch)
 
-    from trading_runtime.backtest.orchestrator.planner_models import (
+    from core_runtime.backtest.orchestrator.planner_models import (
         ExperimentPlan,
         SegmentPlan,
     )
-    from trading_runtime.backtest.orchestrator.sweeps import SweepPlan
-    from trading_runtime.backtest.runtime.entrypoint import _emit_sweep_context
+    from core_runtime.backtest.orchestrator.sweeps import SweepPlan
+    from core_runtime.backtest.runtime.entrypoint import _emit_sweep_context
 
     plan = ExperimentPlan(
         experiment_id="exp-1",

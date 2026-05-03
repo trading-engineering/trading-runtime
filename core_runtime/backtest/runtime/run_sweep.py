@@ -13,17 +13,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from trading_framework.core.risk.risk_config import RiskConfig
-from trading_framework.strategies.strategy_config import StrategyConfig
+from tradingchassis_core.core.risk.risk_config import RiskConfig
+from tradingchassis_core.strategies.strategy_config import StrategyConfig
 
-from trading_runtime.backtest.engine.hft_engine import (
+from core_runtime.backtest.engine.hft_engine import (
     HftBacktestConfig,
     HftBacktestEngine,
     HftEngineConfig,
 )
-from trading_runtime.backtest.io.s3_adapter import OCIObjectStorageS3Shim
-from trading_runtime.backtest.runtime.context import SweepContext
-from trading_runtime.backtest.runtime.core_configuration_mapper import (
+from core_runtime.backtest.io.s3_adapter import OCIObjectStorageS3Shim
+from core_runtime.backtest.runtime.context import SweepContext
+from core_runtime.backtest.runtime.core_configuration_mapper import (
     build_core_configuration_from_run_config,
 )
 

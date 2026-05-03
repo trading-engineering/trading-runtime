@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from trading_framework.core.domain.processing_order import ProcessingPosition
+from tradingchassis_core.core.domain.processing_order import ProcessingPosition
 
 
 class EventStreamCursor:

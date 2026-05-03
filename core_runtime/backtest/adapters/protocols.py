@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from trading_framework.core.domain.types import OrderIntent
+from tradingchassis_core.core.domain.types import OrderIntent
 
 
 class VenueEventWaiter(Protocol):

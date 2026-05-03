@@ -48,9 +48,10 @@ deterministic runtime environments.
 ## 🏷 Naming Clarification (current transitional state)
 
 - Repository/folder name in the monorepo can be `core-runtime`.
-- Python import package in this repository is `trading_runtime`.
+- Python import package in this repository is `core_runtime`.
 - Distribution/project name in packaging metadata is `trading-runtime`.
-- Core package import remains `trading_framework`.
+- Legacy package import `trading_runtime` remains available as a compatibility shim.
+- Core package canonical import is `tradingchassis_core` (`trading_framework` is compatibility/deprecated).
 - Package/directory rename alignment is planned separately and is not part of this phase.
 
 ---
@@ -63,7 +64,7 @@ argo/                 Argo workflow templates
 docs/                 Runtime design notes (implementation-facing)
 examples/             Alternative example runner/config/strategy paths
 scripts/              environment & build helper scripts
-trading_runtime/      Python runtime entrypoints
+core_runtime/         Python runtime entrypoints
 tests/                deterministic test data & validation
 ```
 
@@ -74,9 +75,9 @@ Implementation-facing design notes:
 ### Key runtime modules
 
 ```
-trading_runtime/local/         Local execution mode
-trading_runtime/argo/          Argo workflow entrypoints
-trading_runtime/strategies/    Example strategies
+core_runtime/local/            Local execution mode
+core_runtime/argo/             Argo workflow entrypoints
+core_runtime/strategies/       Example strategies
 ```
 
 ---
@@ -110,7 +111,7 @@ python -m pytest -q tests
 ./scripts/check.sh
 ```
 
-If `trading_framework` is not already available in your environment, install
+If `tradingchassis_core` is not already available in your environment, install
 `core` as a sibling editable package or ensure the pinned dependency resolves.
 
 `PYTHONPATH=.` can be used as a short-term development shortcut, but editable
@@ -122,12 +123,12 @@ installation (`python -m pip install -e .`) is the preferred workflow.
 
 | Mode | Entrypoint | Command shape | Notes |
 | --- | --- | --- | --- |
-| Local backtest | `trading_runtime/local/backtest.py` | `python -m trading_runtime.local.backtest --config trading_runtime/local/local.json` | Main local runner. |
-| Argo plan/run orchestration | `trading_runtime/backtest/runtime/entrypoint.py` | `python -m trading_runtime.backtest.runtime.entrypoint --config trading_runtime/argo/argo.json --plan` | Planner and sweep-context emitter for Argo flow. |
-| Sweep worker | `trading_runtime/backtest/runtime/run_sweep.py` | `python -m trading_runtime.backtest.runtime.run_sweep --context <path-to-sweep-json>` | Executes one sweep context (pod-level unit). |
+| Local backtest | `core_runtime/local/backtest.py` | `python -m core_runtime.local.backtest --config core_runtime/local/local.json` | Main local runner. |
+| Argo plan/run orchestration | `core_runtime/backtest/runtime/entrypoint.py` | `python -m core_runtime.backtest.runtime.entrypoint --config core_runtime/argo/argo.json --plan` | Planner and sweep-context emitter for Argo flow. |
+| Sweep worker | `core_runtime/backtest/runtime/run_sweep.py` | `python -m core_runtime.backtest.runtime.run_sweep --context <path-to-sweep-json>` | Executes one sweep context (pod-level unit). |
 | Examples path | `examples/local/backtest.py` | `python examples/local/backtest.py --config examples/local/local.json` | Alternative example path; useful for reference but duplicates runtime patterns. |
 
-Use `trading_runtime/local/*` for local runtime development, `trading_runtime/backtest/runtime/*`
+Use `core_runtime/local/*` for local runtime development, `core_runtime/backtest/runtime/*`
 for Argo workflow execution, and `examples/*` as a duplicate reference path.
 
 ---
@@ -151,7 +152,7 @@ Verified local workflow:
 
 ```bash
 python -m pip install -e .
-python -m trading_runtime.local.backtest --config trading_runtime/local/local.json
+python -m core_runtime.local.backtest --config core_runtime/local/local.json
 ```
 
 Verified output location:
@@ -174,7 +175,7 @@ Current caveats:
 - Paths are cwd-relative; supported workflow is running from `core-runtime` root.
 - hftbacktest timestamp-ordering warnings may appear from fixture ordering but do not fail the run.
 - `tests/data/results/` may contain historical/sample artifacts and is no longer the default local output location.
-- Naming remains transitional (`core-runtime` repo, `trading-runtime` distribution, `trading_runtime` imports, `trading_framework` core imports); rename/structure alignment is separate work.
+- Naming remains transitional (`core-runtime` repo, `trading-runtime` distribution, `core_runtime` canonical imports, `trading_runtime` compatibility shim, `tradingchassis_core` canonical core imports).
 
 This status confirms local usability for the current local hftbacktest path; it
 does not imply full canonical Event Stream completion.
@@ -228,8 +229,8 @@ These files are used by:
 Run a deterministic local backtest:
 
 ```bash
-python -m trading_runtime.local.backtest \
-  --config trading_runtime/local/local.json
+python -m core_runtime.local.backtest \
+  --config core_runtime/local/local.json
 ```
 
 This uses synthetic deterministic test data located in:
@@ -244,7 +245,7 @@ Results are written to:
 .runtime/local/results/
 ```
 
-Important: `trading_runtime/local/local.json` and `examples/local/local.json`
+Important: `core_runtime/local/local.json` and `examples/local/local.json`
 use cwd-relative paths. Run from the `core-runtime` repository root, or adjust
 config paths for your current working directory.
 

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import pytest
-from trading_framework.core.domain.configuration import CoreConfiguration
+from tradingchassis_core.core.domain.configuration import CoreConfiguration
 
-from trading_runtime.backtest.runtime.core_configuration_mapper import (
+from core_runtime.backtest.runtime.core_configuration_mapper import (
     build_core_configuration_from_run_config,
 )
 

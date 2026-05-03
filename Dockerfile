@@ -29,7 +29,7 @@ RUN pip install --upgrade pip \
 # Copy project files
 COPY pyproject.toml .
 COPY scripts/check.sh .
-COPY trading_runtime/ trading_runtime/
+COPY core_runtime/ core_runtime/
 COPY tests/ tests/
 
 # Install the package itself

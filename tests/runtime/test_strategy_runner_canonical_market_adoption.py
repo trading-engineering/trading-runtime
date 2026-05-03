@@ -5,9 +5,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from trading_framework.core.domain.configuration import CoreConfiguration
-from trading_framework.core.domain.state import StrategyState
-from trading_framework.core.domain.types import (
+from tradingchassis_core.core.domain.configuration import CoreConfiguration
+from tradingchassis_core.core.domain.state import StrategyState
+from tradingchassis_core.core.domain.types import (
     BookLevel,
     BookPayload,
     CancelOrderIntent,
@@ -20,15 +20,15 @@ from trading_framework.core.domain.types import (
     Quantity,
     ReplaceOrderIntent,
 )
-from trading_framework.core.events.event_bus import EventBus
-from trading_framework.core.risk.risk_config import RiskConfig
-from trading_framework.core.risk.risk_engine import GateDecision
-from trading_framework.strategies.base import Strategy
+from tradingchassis_core.core.events.event_bus import EventBus
+from tradingchassis_core.core.risk.risk_config import RiskConfig
+from tradingchassis_core.core.risk.risk_engine import GateDecision
+from tradingchassis_core.strategies.base import Strategy
 
-import trading_runtime.backtest.engine.strategy_runner as strategy_runner_module
-from trading_runtime.backtest.engine.event_stream_cursor import EventStreamCursor
-from trading_runtime.backtest.engine.hft_engine import HftEngineConfig
-from trading_runtime.backtest.engine.strategy_runner import (
+import core_runtime.backtest.engine.strategy_runner as strategy_runner_module
+from core_runtime.backtest.engine.event_stream_cursor import EventStreamCursor
+from core_runtime.backtest.engine.hft_engine import HftEngineConfig
+from core_runtime.backtest.engine.strategy_runner import (
     MAX_TIMEOUT_NS,
     HftStrategyRunner,
 )

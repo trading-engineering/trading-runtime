@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from collections.abc import Collection, Mapping
 
-from trading_framework.core.domain.configuration import CoreConfiguration
+from tradingchassis_core.core.domain.configuration import CoreConfiguration
 
 _REQUIRED_METADATA_FIELDS = ("tick_size", "lot_size", "contract_size")
 
