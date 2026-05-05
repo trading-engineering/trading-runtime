@@ -147,7 +147,8 @@ python -m pip install -e ../core
 
 ```text
 .github/workflows/          CI and deployment workflows
-argo/                       Argo workflow templates
+.github/argo-launchers/     Argo Workflow submit wrappers used by GitHub Actions
+argo/templates/             Argo WorkflowTemplates shown in Argo UI
 core_runtime/               Runtime entrypoints and execution modules
 docs/                       Runtime implementation notes
 examples/                   Example runner/config paths
@@ -238,14 +239,69 @@ Artifacts:
 
 ## Infrastructure notes
 
-Argo/Kubernetes workflows are defined in:
+Argo WorkflowTemplates (visible in Argo UI) are defined in:
 
-- `argo/workflowtemplate-build-push-ghcr.yaml`
-- `argo/workflowtemplate-backtest.yaml`
+- `argo/templates/workflowtemplate-build-push-ghcr.yaml`
+- `argo/templates/workflowtemplate-backtest-fanout.yaml`
 
-Deployment automation is in:
+GitHub-only Argo submit wrappers are in:
 
-- `.github/workflows/deploy_argo_template.yaml`
+- `.github/argo-launchers/run-build.yaml`
+- `.github/argo-launchers/run-backtest.yaml`
+
+Automation that applies templates and starts workflows is in:
+
+- `.github/workflows/argo-build-and-backtest.yaml`
+
+### Argo UI usage
+
+Use this model to avoid confusion:
+
+- `argo/templates/*`: reusable `WorkflowTemplate` definitions that appear in the Argo UI.
+- `.github/argo-launchers/*`: one-off `Workflow` manifests used by GitHub Actions with `envsubst`.
+
+Namespace intent:
+
+- `dev`: branch and development runs.
+- `prod`: main branch and production-like runs.
+
+#### Build image from Argo UI (`build-push-ghcr`)
+
+Template: `build-push-ghcr`
+
+Recommended parameters:
+
+- `git_repo`: keep default `https://github.com/TradingChassis/core-runtime.git`.
+- `image_repo`: keep default `ghcr.io/tradingchassis/core-runtime`.
+- `git_branch`: set the branch name for tagging (default `main`).
+- `core_runtime_commit`: set to a real commit SHA (required).
+
+Guardrails:
+
+- `core_runtime_commit` must be a 7-40 character hex SHA.
+- `git_repo` must be an HTTPS URL ending in `.git`.
+
+Tagging behavior:
+
+- always pushes `<image_repo>:<branch-tag>`
+- always pushes `<image_repo>:<commit-sha>`
+- also pushes `<image_repo>:latest` when `git_branch=main`
+
+#### Run backtest from Argo UI (`backtest-fanout`)
+
+Template: `backtest-fanout`
+
+Recommended parameters:
+
+- `image_repo`: keep default.
+- `image_tag`: set to the exact commit SHA built by `build-push-ghcr` for reproducibility.
+- `experiment_config`: keep default unless intentionally testing a different in-image config.
+- `scratch_root`: keep default `/mnt/scratch`.
+
+Guardrails:
+
+- prefer commit SHA tags for `prod` runs.
+- use mutable tags such as `latest` only for quick smoke checks.
 
 ---
 

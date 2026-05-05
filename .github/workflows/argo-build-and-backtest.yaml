@@ -68,8 +68,8 @@ jobs:
       - name: Apply Argo WorkflowTemplates
         run: |
           sudo microk8s kubectl -n "${{ needs.resolve-context.outputs.namespace }}" apply \
-            -f argo/workflowtemplate-build-push-ghcr.yaml \
-            -f argo/workflowtemplate-backtest-fanout.yaml
+            -f argo/templates/workflowtemplate-build-push-ghcr.yaml \
+            -f argo/templates/workflowtemplate-backtest-fanout.yaml
 
   build-and-backtest:
     runs-on: self-hosted
@@ -88,7 +88,7 @@ jobs:
           export GIT_BRANCH="${{ needs.resolve-context.outputs.branch }}"
 
           BUILD_NAME=$(
-            envsubst < argo/run-build.yaml | \
+            envsubst < .github/argo-launchers/run-build.yaml | \
             sudo microk8s kubectl -n "${{ needs.resolve-context.outputs.namespace }}" create -f - -o jsonpath='{.metadata.name}'
           )
 
@@ -137,7 +137,7 @@ jobs:
         run: |
           export IMAGE_TAG="${GITHUB_SHA}"
 
-          envsubst < argo/run-backtest.yaml | \
+          envsubst < .github/argo-launchers/run-backtest.yaml | \
           sudo microk8s kubectl -n "${{ needs.resolve-context.outputs.namespace }}" create -f -
 
           echo "Submitted backtest workflow in namespace: ${{ needs.resolve-context.outputs.namespace }}"

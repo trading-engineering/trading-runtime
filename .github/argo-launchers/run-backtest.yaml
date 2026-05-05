@@ -8,7 +8,7 @@ spec:
   arguments:
     parameters:
       - name: image_repo
-        value: "ghcr.io/tradingchassis/tradingchassis-core-runtime"
+        value: "ghcr.io/tradingchassis/core-runtime"
       - name: image_tag
         value: "${IMAGE_TAG}"
       - name: experiment_config

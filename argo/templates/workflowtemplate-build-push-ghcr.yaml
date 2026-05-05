@@ -6,8 +6,12 @@ spec:
   entrypoint: build
   arguments:
     parameters:
+      - name: git_repo
+        description: "Git repo used as Kaniko build context"
+        value: https://github.com/TradingChassis/core-runtime.git
+
       - name: image_repo
-        value: ghcr.io/tradingchassis/tradingchassis-core-runtime
+        value: ghcr.io/tradingchassis/core-runtime
 
       - name: git_branch
         description: "Branch name (for tagging only)"
@@ -26,6 +30,7 @@ spec:
           set -euo pipefail
 
           IMAGE_REPO="{{workflow.parameters.image_repo}}"
+          GIT_REPO="{{workflow.parameters.git_repo}}"
           GIT_BRANCH="{{workflow.parameters.git_branch}}"
           RUNTIME_COMMIT="{{workflow.parameters.core_runtime_commit}}"
 
@@ -34,7 +39,19 @@ spec:
             exit 1
           fi
 
-          GIT_REPO="github.com/${IMAGE_REPO#ghcr.io/}"
+          if ! echo "$RUNTIME_COMMIT" | grep -Eq '^[0-9a-fA-F]{7,40}$'; then
+            echo "> core_runtime_commit must be a 7-40 character hex SHA"
+            exit 1
+          fi
+
+          case "$GIT_REPO" in
+            https://*".git")
+              ;;
+            *)
+              echo "> git_repo must be an HTTPS URL ending with .git"
+              exit 1
+              ;;
+          esac
 
           SAFE_BRANCH=$(echo "$GIT_BRANCH" | tr '/' '-' | tr '[:upper:]' '[:lower:]')
 
@@ -50,7 +67,7 @@ spec:
           done
 
           /kaniko/executor \
-            --context=git://$GIT_REPO.git#$RUNTIME_COMMIT \
+            --context="$GIT_REPO#$RUNTIME_COMMIT" \
             --dockerfile=Dockerfile \
             --target=runtime \
             $DESTINATIONS \
