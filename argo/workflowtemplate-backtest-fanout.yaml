@@ -16,7 +16,7 @@ spec:
     parameters:
       - name: image_repo
         description: "Container image repo"
-        value: ghcr.io/trading-engineering/tradingchassis-core-runtime
+        value: ghcr.io/tradingchassis/tradingchassis-core-runtime
 
       - name: image_tag
         description: "Container image tag to run (recommended: commit SHA)"

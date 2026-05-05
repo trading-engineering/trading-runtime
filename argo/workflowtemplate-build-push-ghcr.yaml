@@ -7,7 +7,7 @@ spec:
   arguments:
     parameters:
       - name: image_repo
-        value: ghcr.io/trading-engineering/tradingchassis-core-runtime
+        value: ghcr.io/tradingchassis/tradingchassis-core-runtime
 
       - name: git_branch
         description: "Branch name (for tagging only)"
