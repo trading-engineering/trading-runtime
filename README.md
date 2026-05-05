@@ -303,6 +303,31 @@ Guardrails:
 - prefer commit SHA tags for `prod` runs.
 - use mutable tags such as `latest` only for quick smoke checks.
 
+### Backtest storage vs MLflow tracking
+
+Core Runtime and MLflow serve different purposes in cluster runs:
+
+- Backtest output artifacts are written by Core Runtime directly to OCI Object Storage.
+- MLflow is used for tracking metadata only (params, metrics, tags), not for artifact files.
+
+Backtest artifact storage path:
+
+- bucket: `data`
+- prefix: `backtests/<experiment_id>/...`
+- auth mode: OCI Instance Principals (IAM policy controlled)
+
+Code anchors:
+
+- backtest result download/upload pipeline: `core_runtime/backtest/runtime/run_sweep.py`
+- OCI Object Storage adapter + auth behavior: `core_runtime/backtest/io/s3_adapter.py`
+- MLflow tracking logger (no artifact logging): `core_runtime/backtest/runtime/mlflow_segment_logger.py`
+
+Tracking-only policy:
+
+- MLflow run metadata remains in the backend store.
+- MLflow artifact storage is intentionally unsupported in this setup.
+- If a client starts calling artifact APIs (for example `mlflow.log_artifact(...)`), treat failures as expected until artifact storage is intentionally added.
+
 ---
 
 ## Scripts
