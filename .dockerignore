@@ -52,12 +52,20 @@ site/
 # ==============================
 # Test cache / reports
 # ==============================
+.ruff_cache/
+.mypy_cache/
+.import_linter_cache/
 pytest_cache/
 .tox/
 .nox/
 .hypothesis/
 .coverage*
 coverage.xml
+
+# ==============================
+# Local runtime outputs
+# ==============================
+.runtime/
 
 # ==============================
 # Random OS files
