@@ -1,0 +1,13 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: build-push-
+spec:
+  workflowTemplateRef:
+    name: build-push-ghcr
+  arguments:
+    parameters:
+      - name: git_branch
+        value: "${GIT_BRANCH}"
+      - name: core_runtime_commit
+        value: "${RUNTIME_COMMIT}"

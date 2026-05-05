@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing!
 
-This repository is a runtime example for the [trading-framework](https://github.com/trading-engineering/trading-framework) framework using
+This repository is a Core Runtime example for [Core (`tradingchassis-core`)](https://github.com/TradingChassis/core) using
 [Kubernetes](https://kubernetes.io) (via e.g. [MicroK8s](https://microk8s.io)) and [Argo Workflows](https://argoproj.github.io/workflows).
 Contributions should preserve clarity, explicitness and reproducibility.
 

@@ -7,7 +7,7 @@ This project adheres to Semantic Versioning.
 
 ## [0.1.0] – 2026-02-17
 
-Initial public release of the trading-runtime execution and orchestration layer.
+Initial public release of the Core Runtime execution and orchestration layer.
 
 ### Added
 
@@ -20,7 +20,7 @@ Initial public release of the trading-runtime execution and orchestration layer.
 
 #### Dependency Management
 
-- Commit-pinned `trading-framework` integration
+- Commit-pinned `tradingchassis-core` integration
 - Reproducible dependency compilation via pip-tools
 - Environment bootstrap scripts
 

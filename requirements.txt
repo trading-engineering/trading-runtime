@@ -12,10 +12,6 @@ annotated-types==0.7.0
     # via pydantic
 anyio==4.12.1
     # via starlette
-attrs==25.4.0
-    # via
-    #   jsonschema
-    #   referencing
 bleach==6.3.0
     # via panel
 blinker==1.9.0
@@ -96,7 +92,7 @@ gunicorn==23.0.0
 h11==0.16.0
     # via uvicorn
 hftbacktest==2.4.4
-    # via trading-framework
+    # via tradingchassis-core-runtime (pyproject.toml)
 holoviews==1.22.1
     # via hftbacktest
 huey==2.6.0
@@ -117,10 +113,6 @@ jinja2==3.1.6
     #   flask
 joblib==1.5.3
     # via scikit-learn
-jsonschema==4.26.0
-    # via trading-framework
-jsonschema-specifications==2025.9.1
-    # via jsonschema
 kiwisolver==1.4.9
     # via matplotlib
 linkify-it-py==2.0.3
@@ -150,7 +142,7 @@ mdit-py-plugins==0.5.0
 mdurl==0.1.2
     # via markdown-it-py
 mlflow==3.9.0
-    # via trading-framework
+    # via tradingchassis-core-runtime (pyproject.toml)
 mlflow-skinny==3.9.0
     # via mlflow
 mlflow-tracing==3.9.0
@@ -176,9 +168,8 @@ numpy==2.2.6
     #   scikit-learn
     #   scipy
     #   skops
-    #   trading-framework
 oci==2.167.1
-    # via trading-framework
+    # via tradingchassis-core-runtime (pyproject.toml)
 opentelemetry-api==1.39.1
     # via
     #   mlflow-skinny
@@ -229,7 +220,7 @@ polars-runtime-32==1.38.1
 prettytable==3.17.0
     # via skops
 prometheus-client==0.24.1
-    # via trading-framework
+    # via tradingchassis-core-runtime (pyproject.toml)
 protobuf==6.33.5
     # via
     #   databricks-sdk
@@ -237,9 +228,7 @@ protobuf==6.33.5
     #   mlflow-tracing
     #   opentelemetry-proto
 pyarrow==16.1.0
-    # via
-    #   mlflow
-    #   trading-framework
+    # via mlflow
 pyasn1==0.6.2
     # via
     #   pyasn1-modules
@@ -253,7 +242,7 @@ pydantic==2.12.5
     #   fastapi
     #   mlflow-skinny
     #   mlflow-tracing
-    #   trading-framework
+    #   tradingchassis-core
 pydantic-core==2.41.5
     # via pydantic
 pyopenssl==25.1.0
@@ -281,20 +270,12 @@ pyyaml==6.0.3
     # via
     #   bokeh
     #   mlflow-skinny
-referencing==0.37.0
-    # via
-    #   jsonschema
-    #   jsonschema-specifications
 requests==2.32.5
     # via
     #   databricks-sdk
     #   docker
     #   mlflow-skinny
     #   panel
-rpds-py==0.30.0
-    # via
-    #   jsonschema
-    #   referencing
 rsa==4.9.1
     # via google-auth
 scikit-learn==1.8.0
@@ -325,10 +306,8 @@ threadpoolctl==3.6.0
 tornado==6.5.4
     # via bokeh
 tqdm==4.67.3
-    # via
-    #   panel
-    #   trading-framework
-trading-framework @ git+https://github.com/trading-engineering/trading-framework.git@934d332c21bef56fa76c19f477143d8d438238c2
+    # via panel
+tradingchassis-core @ git+https://github.com/TradingChassis/core.git@10b09aac06881b0f8f942e08104a09d86ba2d2ca
     # via -r _git_deps.in
 typing-extensions==4.15.0
     # via
@@ -344,7 +323,6 @@ typing-extensions==4.15.0
     #   pydantic
     #   pydantic-core
     #   pyopenssl
-    #   referencing
     #   sqlalchemy
     #   starlette
     #   typing-inspection
@@ -356,8 +334,6 @@ tzdata==2025.3
     # via pandas
 uc-micro-py==1.0.3
     # via linkify-it-py
-ujson==5.11.0
-    # via trading-framework
 urllib3==2.6.3
     # via
     #   docker

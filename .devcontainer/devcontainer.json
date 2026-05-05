@@ -1,18 +1,17 @@
 {
-  "name": "Trading Runtime Dev",
+  "name": "TradingChassis Core Runtime Dev",
   "build": {
     "dockerfile": "Dockerfile",
     "context": ".."
   },
 
-  "postCreateCommand": "./scripts/post-create.sh",
+  "workspaceFolder": "/workspaces/core-runtime",
+  "remoteUser": "root",
+  "runArgs": ["--security-opt=label=disable"],
+  "containerEnv": {
+    "SHELL": "/bin/bash"
+  },
 
-  "customizations": {
-    "vscode": {
-      "extensions": [
-        "ms-python.python",
-        "ms-python.debugpy"
-      ]
-    }
-  }
+  "postCreateCommand": "./scripts/post-create.sh"
+
 }

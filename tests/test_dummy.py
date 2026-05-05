@@ -27,10 +27,10 @@ def test_exception():
 
 def test_package_import():
     """
-    Optional: verify that trading_runtime can be imported.
+    Optional: verify that core_runtime can be imported.
     Remove if not needed.
     """
     try:
-        import trading_runtime  # noqa: F401
+        import core_runtime  # noqa: F401
     except ImportError as exc:
-        pytest.fail(f"Failed to import trading_runtime: {exc}")
+        pytest.fail(f"Failed to import runtime package: {exc}")

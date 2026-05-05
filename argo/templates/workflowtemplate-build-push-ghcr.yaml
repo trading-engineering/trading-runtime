@@ -1,0 +1,95 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: build-push-ghcr
+spec:
+  entrypoint: build
+  arguments:
+    parameters:
+      - name: git_repo
+        description: "Git repo used as Kaniko build context"
+        value: https://github.com/TradingChassis/core-runtime.git
+
+      - name: image_repo
+        value: ghcr.io/tradingchassis/core-runtime
+
+      - name: git_branch
+        description: "Branch name (for tagging only)"
+        value: main
+
+      - name: core_runtime_commit
+        description: "Exact commit SHA of core-runtime"
+        value: ""
+
+  templates:
+    - name: build
+      script:
+        image: gcr.io/kaniko-project/executor:debug
+        command: ["/busybox/sh"]
+        source: |
+          set -euo pipefail
+
+          IMAGE_REPO="{{workflow.parameters.image_repo}}"
+          GIT_REPO="{{workflow.parameters.git_repo}}"
+          GIT_BRANCH="{{workflow.parameters.git_branch}}"
+          RUNTIME_COMMIT="{{workflow.parameters.core_runtime_commit}}"
+
+          if [ -z "$RUNTIME_COMMIT" ]; then
+            echo "> core_runtime_commit must be set"
+            exit 1
+          fi
+
+          if ! echo "$RUNTIME_COMMIT" | grep -Eq '^[0-9a-fA-F]{7,40}$'; then
+            echo "> core_runtime_commit must be a 7-40 character hex SHA"
+            exit 1
+          fi
+
+          case "$GIT_REPO" in
+            https://*".git")
+              ;;
+            *)
+              echo "> git_repo must be an HTTPS URL ending with .git"
+              exit 1
+              ;;
+          esac
+
+          SAFE_BRANCH=$(echo "$GIT_BRANCH" | tr '/' '-' | tr '[:upper:]' '[:lower:]')
+
+          TAGS="$IMAGE_REPO:$SAFE_BRANCH $IMAGE_REPO:$RUNTIME_COMMIT"
+
+          if [ "$GIT_BRANCH" = "main" ]; then
+            TAGS="$TAGS $IMAGE_REPO:latest"
+          fi
+
+          DESTINATIONS=""
+          for TAG in $TAGS; do
+            DESTINATIONS="$DESTINATIONS --destination=$TAG"
+          done
+
+          export GIT_PULL_METHOD=https
+
+          /kaniko/executor \
+            --context="git://${GIT_REPO#https://}#$RUNTIME_COMMIT" \
+            --dockerfile=Dockerfile \
+            --target=runtime \
+            $DESTINATIONS \
+            --build-arg=GIT_BRANCH=$GIT_BRANCH \
+            --build-arg=GIT_COMMIT=$RUNTIME_COMMIT \
+            --build-arg=GIT_DIRTY=0 \
+            --cache=true \
+            --cache-repo=$IMAGE_REPO-cache
+
+        volumeMounts:
+          - name: docker-config
+            mountPath: /kaniko/.docker
+        securityContext:
+          runAsUser: 0
+          runAsNonRoot: false
+
+      volumes:
+        - name: docker-config
+          secret:
+            secretName: ghcr-secret
+            items:
+              - key: .dockerconfigjson
+                path: config.json

@@ -1,300 +1,352 @@
-# Trading Runtime
+# TradingChassis — Core Runtime
 
-![CI](https://github.com/trading-engineering/trading-runtime/actions/workflows/tests.yaml/badge.svg)
+![CI](https://github.com/TradingChassis/core-runtime/actions/workflows/tests.yaml/badge.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-Runtime execution layer and orchestration environment for the
-[trading-framework](https://github.com/trading-engineering/trading-framework).
+Execution and orchestration environment around Core.
 
-This repository provides:
-
-- Local execution examples
-- Reproducible runtime environments
-- Dependency pinning
-- [Kubernetes](https://kubernetes.io)-native orchestration via [Argo Workflows](https://argoproj.github.io/workflows)
-- CI-integrated build pipelines
+Core Runtime consumes Core (`tradingchassis_core`) and provides local/cluster entrypoints,
+configuration, adapter integration, runtime packaging, and reproducible execution workflows.
 
 ---
 
-## 🧠 What is this?
+## Overview
 
-`trading-runtime` is the execution and orchestration layer built on top of `trading-framework`.
+Core Runtime is the runtime layer for executing Core semantics in concrete environments.
 
-While `trading-framework` implements the deterministic trading framework,
-this repository focuses on:
-
-- how strategies are executed
-- how environments are reproduced
-- how workloads are orchestrated
-- how results are produced and validated
-
-It intentionally contains no domain framework logic.
+- local hftbacktest-backed backtest execution
+- runtime entrypoints for orchestration flows
+- reproducible dependency/runtime packaging
+- CI and infrastructure wiring for deployment workflows
 
 ---
 
-## 🧩 Relationship to trading-framework
+## What Core Runtime is
 
-```
-trading-framework  → core framework, backtesting engine, domain logic
-trading-runtime    → executing entrypoints, runtime configs, orchestration
-```
+Core Runtime provides:
 
-The framework is consumed as a pinned Git dependency to guarantee
-deterministic runtime environments.
-
----
-
-## 📁 Repository Structure
-
-```
-.github/workflows/    CI pipelines (tests, Argo template deploy)
-argo/                 Argo workflow templates
-scripts/              environment & build helper scripts
-trading_runtime/      Python runtime entrypoints
-tests/                deterministic test data & validation
-```
-
-### Key runtime modules
-
-```
-trading_runtime/local/         Local execution mode
-trading_runtime/argo/          Argo workflow entrypoints
-trading_runtime/strategies/    Example strategies
-```
+- executable runtime entrypoints (`core_runtime/...`)
+- runtime configs and environment wiring
+- adapter-facing integration layers around Core
+- orchestration integration (Argo/Kubernetes)
+- runtime validation and smoke/test workflows
 
 ---
 
-## 📌 Dependency Pinning & Reproducibility
+## What Core Runtime is not
 
-The `trading-framework` dependency is pinned by commit SHA.
+Core Runtime is not the semantic source of truth for Core concepts.
 
-Create a `.env` file:
+It consumes Core and should not redefine canonical terms such as Event, Event Stream, Processing
+Order, State, or Risk Engine.
+
+---
+
+## Current local hftbacktest usability status
+
+Current local smoke is usable from the `core-runtime` repository root:
 
 ```bash
-TRADING_FRAMEWORK_COMMIT=<commit-sha>
+python -m core_runtime.local.backtest --config core_runtime/local/local.json
 ```
 
-Generate reproducible environments:
+Default output location:
+
+```text
+.runtime/local/results/
+```
+
+This confirms current local usability and does not claim full canonical Event Stream completion.
+
+---
+
+## Quick start
+
+From the `core-runtime` repository root:
+
+```bash
+python -m pip install -e .
+python -m core_runtime.local.backtest --config core_runtime/local/local.json
+```
+
+If `tradingchassis_core` is not already resolvable in your environment, install `core` as a
+sibling editable package in a monorepo workspace:
+
+```bash
+python -m pip install -e ../core
+```
+
+---
+
+## Entrypoint matrix
+
+| Mode | Entrypoint | Command shape | Notes |
+| --- | --- | --- | --- |
+| Local backtest | `core_runtime/local/backtest.py` | `python -m core_runtime.local.backtest --config core_runtime/local/local.json` | Main local runner. |
+| Argo plan/run orchestration | `core_runtime/backtest/runtime/entrypoint.py` | `python -m core_runtime.backtest.runtime.entrypoint --config core_runtime/argo/argo.json --plan` | Planner and sweep-context emitter for Argo flow. |
+| Sweep worker | `core_runtime/backtest/runtime/run_sweep.py` | `python -m core_runtime.backtest.runtime.run_sweep --context <path-to-sweep-json>` | Executes one sweep context. |
+
+---
+
+## Adapter capability model
+
+| Capability area | Status | Notes |
+| --- | --- | --- |
+| Canonical runtime paths | Active | `MarketEvent`, `OrderSubmittedEvent`, `ControlTimeEvent` |
+| Compatibility paths | Active | Post-submission order/fill progression via snapshots, `OrderStateEvent`, and `DerivedFillEvent` |
+| Deferred capabilities | Deferred | Runtime `FillEvent` ingress, `ExecutionFeedbackRecordSource`, replay/storage/Event Stream persistence, `ProcessingContext` |
+
+---
+
+## Current hftbacktest capability map
+
+- Local hftbacktest flow is usable for current transitional runtime paths.
+- Compatibility mechanisms remain in place for post-submission progression.
+- Deferred capabilities are intentionally not presented as shipped runtime behavior.
+
+---
+
+## Canonical runtime paths
+
+- `MarketEvent`
+- `OrderSubmittedEvent`
+- `ControlTimeEvent`
+
+---
+
+## Compatibility paths
+
+- snapshot-based post-submission progression
+- `OrderStateEvent`
+- `DerivedFillEvent`
+
+---
+
+## Deferred capabilities
+
+- runtime `FillEvent` ingress
+- `ExecutionFeedbackRecordSource`
+- replay/storage/Event Stream persistence
+- `ProcessingContext`
+
+---
+
+## Package and import names
+
+- Human-facing concept name: Core Runtime
+- Distribution/project name: `tradingchassis-core-runtime`
+- Python import package: `core_runtime`
+- Core distribution/project name: `tradingchassis-core`
+- Core Python import package: `tradingchassis_core`
+
+---
+
+## Repository structure
+
+```text
+.github/workflows/          CI and deployment workflows
+.github/argo-launchers/     Argo Workflow submit wrappers used by GitHub Actions
+argo/templates/             Argo WorkflowTemplates shown in Argo UI
+core_runtime/               Runtime entrypoints and execution modules
+docs/                       Runtime implementation notes
+scripts/                    Build/validation helper scripts
+tests/                      Runtime tests and deterministic fixtures
+```
+
+---
+
+## Configuration
+
+Primary local config:
+
+- `core_runtime/local/local.json`
+- OCI config template (for local object storage auth setups): `core_runtime/local/oci.config.example`
+
+Note: local JSON configs use cwd-relative paths for `tests/data/...` inputs and `.runtime/...`
+outputs. The supported default workflow is to run commands from the `core-runtime` repo root.
+
+---
+
+## Development setup
+
+### Standalone `core-runtime` root
+
+```bash
+python -m pip install -e .
+python -m pytest -q tests
+./scripts/check.sh
+```
+
+### Monorepo workspace root (with `core/` and `core-runtime/`)
+
+```bash
+python -m pip install -e core
+python -m pip install -e core-runtime
+python -m pytest -q core-runtime/tests
+python -m pytest -q core/tests
+```
+
+---
+
+## Test commands
+
+From `core-runtime` root:
+
+```bash
+python -m pytest -q tests
+./scripts/check.sh
+```
+
+From monorepo root:
+
+```bash
+python -m pytest -q core-runtime/tests
+python -m pytest -q core/tests
+```
+
+---
+
+## Relationship to Core
+
+Core provides deterministic semantics and domain contracts.
+
+Core Runtime provides execution environments and orchestration around those semantics.
+
+---
+
+## Dependency pinning and reproducibility
+
+Core dependency can be pinned by commit SHA through environment configuration:
+
+```bash
+TRADINGCHASSIS_CORE_COMMIT=<commit-sha>
+```
+
+To compile reproducible requirements:
 
 ```bash
 ./scripts/compile-requirements.sh
 ```
 
-This produces:
+Artifacts:
 
 - `requirements.txt`
 - `requirements-dev.txt`
 
-These files are used by:
+---
 
-- Dev Containers
-- Docker images
+## Infrastructure notes
+
+Argo WorkflowTemplates (visible in Argo UI) are defined in:
+
+- `argo/templates/workflowtemplate-build-push-ghcr.yaml`
+- `argo/templates/workflowtemplate-backtest-fanout.yaml`
+
+GitHub-only Argo submit wrappers are in:
+
+- `.github/argo-launchers/run-build.yaml`
+- `.github/argo-launchers/run-backtest.yaml`
+
+Automation that applies templates and starts workflows is in:
+
+- `.github/workflows/argo-build-and-backtest.yaml`
+
+### Argo UI usage
+
+Use this model to avoid confusion:
+
+- `argo/templates/*`: reusable `WorkflowTemplate` definitions that appear in the Argo UI.
+- `.github/argo-launchers/*`: one-off `Workflow` manifests used by GitHub Actions with `envsubst`.
+
+Namespace intent:
+
+- `dev`: branch and development runs.
+- `prod`: main branch and production-like runs.
+
+#### Build image from Argo UI (`build-push-ghcr`)
+
+Template: `build-push-ghcr`
+
+Recommended parameters:
+
+- `git_repo`: keep default `https://github.com/TradingChassis/core-runtime.git`.
+- `image_repo`: keep default `ghcr.io/tradingchassis/core-runtime`.
+- `git_branch`: set the branch name for tagging (default `main`).
+- `core_runtime_commit`: set to a real commit SHA (required).
+
+Guardrails:
+
+- `core_runtime_commit` must be a 7-40 character hex SHA.
+- `git_repo` must be an HTTPS URL ending in `.git`.
+
+Tagging behavior:
+
+- always pushes `<image_repo>:<branch-tag>`
+- always pushes `<image_repo>:<commit-sha>`
+- also pushes `<image_repo>:latest` when `git_branch=main`
+
+#### Run backtest from Argo UI (`backtest-fanout`)
+
+Template: `backtest-fanout`
+
+Recommended parameters:
+
+- `image_repo`: keep default.
+- `image_tag`: set to the exact commit SHA built by `build-push-ghcr` for reproducibility.
+- `experiment_config`: keep default unless intentionally testing a different in-image config.
+- `scratch_root`: keep default `/mnt/scratch`.
+
+Guardrails:
+
+- prefer commit SHA tags for `prod` runs.
+- use mutable tags such as `latest` only for quick smoke checks.
+
+### Backtest storage vs MLflow tracking
+
+Core Runtime and MLflow serve different purposes in cluster runs:
+
+- Backtest output artifacts are written by Core Runtime directly to OCI Object Storage.
+- MLflow is used for tracking metadata only (params, metrics, tags), not for artifact files.
+
+Backtest artifact storage path:
+
+- bucket: `data`
+- prefix: `backtests/<experiment_id>/...`
+- auth mode: OCI Instance Principals (IAM policy controlled)
+
+Code anchors:
+
+- backtest result download/upload pipeline: `core_runtime/backtest/runtime/run_sweep.py`
+- OCI Object Storage adapter + auth behavior: `core_runtime/backtest/io/s3_adapter.py`
+- MLflow tracking logger (no artifact logging): `core_runtime/backtest/runtime/mlflow_segment_logger.py`
+
+Tracking-only policy:
+
+- MLflow run metadata remains in the backend store.
+- MLflow artifact storage is intentionally unsupported in this setup.
+- If a client starts calling artifact APIs (for example `mlflow.log_artifact(...)`), treat failures as expected until artifact storage is intentionally added.
 
 ---
 
-## ▶️ Local Execution
+## Scripts
 
-Run a deterministic local backtest:
-
-```bash
-python trading_runtime/local/backtest.py \
-  --config trading_runtime/local/local.json
-```
-
-This uses synthetic deterministic test data located in:
-
-```
-tests/data/parts/
-```
-
-Results are written to:
-
-```
-tests/data/results/
-```
+| Script | Purpose |
+| --- | --- |
+| `compile-requirements.sh` | Resolves dependencies and pins Core revision inputs |
+| `post-create.sh` | Dev container bootstrap |
+| `check.sh` | Local validation helpers |
 
 ---
 
-## ⚙️ Infrastructure Requirements
+## Documentation index
 
-The Argo-based workflows require:
-
-- A self-hosted GitHub Actions runner
-- microk8s Kubernetes distribution (with sudo access)
-- Argo Workflows installed in the cluster
-- GitHub Container Registry access (GHCR_TOKEN secret)
-
-GitHub-hosted runners are only used for unit tests.
-All Kubernetes orchestration runs on self-hosted infrastructure.
+- Runtime adapter design: `docs/venue-adapter-abstraction-design-v1.md`
+- Shared terminology source of truth: `docs/docs/00-guides/terminology.md`
+- Core library scope: `core/README.md`
 
 ---
 
-## ☸ Kubernetes & Argo Workflows
+## License and versioning
 
-This runtime is designed for Kubernetes-native execution using Argo Workflows.
-
-Two core workflow templates define the execution pipeline:
-
-```
-argo/workflowtemplate-build-push-ghcr.yaml
-argo/workflowtemplate-backtest.yaml
-```
-
-### 🐳 Runtime Image Build & Push
-
-`workflowtemplate-build-push-ghcr.yaml` builds the trading-runtime Docker image and pushes it to
-GitHub Container Registry (GHCR).
-
-This image contains:
-
-- Python dependencies and entrypoints
-- trading-framework and trading-runtime commit SHA
-- strategies and configs
-
-It acts as an immutable and deterministic runtime environment for all backtests.
-
-### ▶️ Backtest Orchestration
-
-`workflowtemplate-backtest.yaml` orchestrates backtest workloads using Argo.
-
-It:
-
-- pulls the runtime image from GHCR
-- executes runtime entrypoints inside Kubernetes pods
-- distributes workloads across the cluster
-- saves deterministic result artifacts
-
-All backtests always run inside the runtime image.
-
-### 🔄 End-to-End Flow
-
-```
-Docker build → Push to GHCR → Argo pulls image → Backtests execute in cluster
-```
-
-This guarantees:
-
-- identical runtime environments locally and in Kubernetes
-- reproducible research runs
-
----
-
-## 🔐 GHCR Registry Access
-
-To allow Kubernetes to pull runtime images from GitHub Container Registry (GHCR),
-the deployment workflow creates a `docker-registry` secret inside the target Kubernetes namespace.
-
-The secret is created by the GitHub Actions workflow located at:
-
-```
-.github/workflows/deploy_argo_template.yaml
-```
-
-It runs the equivalent of:
-
-```bash
-sudo microk8s kubectl -n $K8S_NAMESPACE create secret docker-registry ghcr-secret \
-  --docker-server=ghcr.io \
-  --docker-username=git \
-  --docker-password=$GHCR_TOKEN \
-  --dry-run=client -o yaml | sudo microk8s kubectl apply -f -
-```
-
-### Required Repository Secret
-
-The workflow requires a GitHub repository secret named:
-
-```
-GHCR_TOKEN
-```
-
-This token must be a GitHub Personal Access Token with:
-
-* `read:packages`
-
-Add it under:
-
-```
-Repository → Settings → Secrets and variables → Actions
-```
-
-Without this secret, the workflow cannot authenticate against GHCR, and Kubernetes will fail to pull the runtime image.
-
----
-
-## 🛠 Scripts
-
-| Script                    | Purpose                                         |
-| ------------------------- | ----------------------------------------------- |
-| `compile-requirements.sh` | Pins trading-framework and resolves dependencies |
-| `post-create.sh`          | Dev container bootstrap                         |
-| `check.sh`                | Local validation helpers                        |
-
----
-
-## 🧪 Test Data
-
-Synthetic datasets are provided in:
-
-```
-tests/data/parts/
-```
-
-Result artifacts:
-
-```
-tests/data/results/
-```
-
-Helper generation scripts:
-
-```
-tests/data/scripts/
-```
-
-These guarantee reproducible runtime validation.
-
----
-
-## 🧪 CI & Automation
-
-GitHub Actions workflows:
-
-- `tests.yaml` — runtime validation
-- `deploy_argo_template.yaml` — Argo template deployment
-
-Supports both GitHub-hosted and self-hosted runners respectively.
-
----
-
-## 🎯 Design Principles
-
-- Determinism over convenience
-- Reproducible environments
-- Explicit execution entrypoints
-- Infrastructure separated from domain logic
-- Cloud-native orchestration
-
----
-
-## 📌 Scope
-
-This repository includes:
-
-- runtime execution logic
-- environment orchestration
-- CI pipelines
-- container workflows
-
-It does not include:
-
-- trading framework internals
-- specific strategy research logic
-
----
-
-## 🏷️ Versioning
-
-This project follows the MIT license and semantic versioning.
-Initial public release: `v0.1.0`
+MIT licensed. Versioning follows semantic versioning.
