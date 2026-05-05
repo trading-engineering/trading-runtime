@@ -86,7 +86,6 @@ python -m pip install -e ../core
 | Local backtest | `core_runtime/local/backtest.py` | `python -m core_runtime.local.backtest --config core_runtime/local/local.json` | Main local runner. |
 | Argo plan/run orchestration | `core_runtime/backtest/runtime/entrypoint.py` | `python -m core_runtime.backtest.runtime.entrypoint --config core_runtime/argo/argo.json --plan` | Planner and sweep-context emitter for Argo flow. |
 | Sweep worker | `core_runtime/backtest/runtime/run_sweep.py` | `python -m core_runtime.backtest.runtime.run_sweep --context <path-to-sweep-json>` | Executes one sweep context. |
-| Examples path | `examples/local/backtest.py` | `python examples/local/backtest.py --config examples/local/local.json` | Reference path; duplicates runtime patterns. |
 
 ---
 
@@ -151,7 +150,6 @@ python -m pip install -e ../core
 argo/templates/             Argo WorkflowTemplates shown in Argo UI
 core_runtime/               Runtime entrypoints and execution modules
 docs/                       Runtime implementation notes
-examples/                   Example runner/config paths
 scripts/                    Build/validation helper scripts
 tests/                      Runtime tests and deterministic fixtures
 ```
@@ -163,6 +161,7 @@ tests/                      Runtime tests and deterministic fixtures
 Primary local config:
 
 - `core_runtime/local/local.json`
+- OCI config template (for local object storage auth setups): `core_runtime/local/oci.config.example`
 
 Note: local JSON configs use cwd-relative paths for `tests/data/...` inputs and `.runtime/...`
 outputs. The supported default workflow is to run commands from the `core-runtime` repo root.
