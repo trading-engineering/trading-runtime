@@ -66,8 +66,10 @@ spec:
             DESTINATIONS="$DESTINATIONS --destination=$TAG"
           done
 
+          export GIT_PULL_METHOD=https
+
           /kaniko/executor \
-            --context="$GIT_REPO#$RUNTIME_COMMIT" \
+            --context="git://${GIT_REPO#https://}#$RUNTIME_COMMIT" \
             --dockerfile=Dockerfile \
             --target=runtime \
             $DESTINATIONS \
