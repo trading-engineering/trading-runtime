@@ -977,7 +977,7 @@ def test_control_time_deadline_injection_is_not_periodic_for_same_deadline(
     assert control_count == 1
 
 
-def test_control_time_event_processed_after_pop_and_before_gate(
+def test_control_time_event_processed_before_pop_and_gate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     queued_intent = _new_intent()
@@ -1017,9 +1017,87 @@ def test_control_time_event_processed_after_pop_and_before_gate(
     )
     runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
 
-    assert ordering == ["pop", "control", "gate"]
+    assert ordering == ["control", "pop", "gate"]
     assert len(captured_raw_inputs) == 1
     assert [it.client_order_id for it in captured_raw_inputs[0]] == [queued_intent.client_order_id]
+
+
+def test_control_time_processing_failure_does_not_pop_or_mark_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+    runner._next_send_ts_ns_local = 5
+
+    pop_count = 0
+
+    def _fail_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        _ = (state, configuration)
+        if isinstance(entry.event, ControlTimeEvent):
+            raise RuntimeError("boom")
+
+    def _spy_pop_queued_intents(instrument: str) -> list[Any]:
+        nonlocal pop_count
+        _ = instrument
+        pop_count += 1
+        return []
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _fail_process_event_entry)
+    monkeypatch.setattr(runner.strategy_state, "pop_queued_intents", _spy_pop_queued_intents)
+
+    venue = _StubVenue(
+        rc_sequence=[0, 0, 1],
+        ts_sequence=[1, 10, 11],
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert pop_count == 0
+    assert runner._last_injected_control_deadline_ns is None
+
+
+def test_realized_old_deadline_does_not_pop_without_new_canonical_injection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+    runner._next_send_ts_ns_local = 5
+
+    control_count = 0
+    pop_count = 0
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        nonlocal control_count
+        _ = (state, configuration)
+        if isinstance(entry.event, ControlTimeEvent):
+            control_count += 1
+
+    def _spy_pop_queued_intents(instrument: str) -> list[Any]:
+        nonlocal pop_count
+        _ = instrument
+        pop_count += 1
+        return []
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(runner.strategy_state, "pop_queued_intents", _spy_pop_queued_intents)
+
+    venue = _StubVenue(
+        rc_sequence=[0, 0, 0, 1],
+        ts_sequence=[1, 10, 10, 11],
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert control_count == 1
+    assert pop_count == 1
 
 
 def test_global_canonical_counter_shared_with_control_time_market_and_submitted(

@@ -330,9 +330,6 @@ class HftStrategyRunner:
                 and sim_now_ns >= self._next_send_ts_ns_local
             ):
                 scheduled_deadline_ns = self._next_send_ts_ns_local
-                raw_intents.extend(
-                    self.strategy_state.pop_queued_intents(instrument)
-                )
                 if (
                     scheduled_deadline_ns
                     != self._last_injected_control_deadline_ns
@@ -342,6 +339,9 @@ class HftStrategyRunner:
                         scheduled_deadline_ns=scheduled_deadline_ns,
                     )
                     self._last_injected_control_deadline_ns = scheduled_deadline_ns
+                    raw_intents.extend(
+                        self.strategy_state.pop_queued_intents(instrument)
+                    )
 
             # -----------------------------------------------------------------
             # Gate + execution
