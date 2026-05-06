@@ -7,13 +7,14 @@ from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from tradingchassis_core import run_core_step
+from tradingchassis_core import ControlTimeQueueReevaluationContext, run_core_step
 from tradingchassis_core.core.domain.configuration import CoreConfiguration
 from tradingchassis_core.core.domain.processing import process_event_entry
 from tradingchassis_core.core.domain.processing_order import (
     EventStreamEntry,
 )
 from tradingchassis_core.core.domain.state import StrategyState
+from tradingchassis_core.core.domain.step_result import CoreStepResult
 from tradingchassis_core.core.domain.types import (
     BookLevel,
     BookPayload,
@@ -169,10 +170,12 @@ class HftStrategyRunner:
     def _process_canonical_control_time_event(
         self,
         *,
+        instrument: str,
+        now_ts_ns_local: int,
         sim_now_ns: int,
         scheduled_deadline_ns: int,
         scheduling_obligation: ControlSchedulingObligation | None = None,
-    ) -> None:
+    ) -> CoreStepResult:
         obligation_reason = "rate_limit"
         obligation_due_ts_ns_local = scheduled_deadline_ns
         if scheduling_obligation is not None:
@@ -192,12 +195,18 @@ class HftStrategyRunner:
             position=position,
             event=control_time_event,
         )
-        _ = run_core_step(
+        result = run_core_step(
             self.strategy_state,
             entry,
             configuration=self._core_cfg,
+            control_time_queue_context=ControlTimeQueueReevaluationContext(
+                risk_engine=self.risk,
+                instrument=instrument,
+                now_ts_ns_local=now_ts_ns_local,
+            ),
         )
         self._event_stream_cursor.commit_success(position)
+        return result
 
     @staticmethod
     def _select_effective_control_scheduling_obligation(
@@ -240,6 +249,84 @@ class HftStrategyRunner:
         self._pending_control_scheduling_obligation = selected
         self._next_send_ts_ns_local = selected.due_ts_ns_local
 
+    def _apply_control_scheduling_obligation(
+        self,
+        obligation: ControlSchedulingObligation | None,
+    ) -> None:
+        if obligation is None:
+            return
+        if self._pending_control_scheduling_obligation == obligation:
+            self._next_send_ts_ns_local = obligation.due_ts_ns_local
+            return
+        self._pending_control_scheduling_obligation = obligation
+        self._next_send_ts_ns_local = obligation.due_ts_ns_local
+
+    def _dispatch_accepted_intents(
+        self,
+        accepted_now: list[OrderIntent],
+        execution: OrderSubmissionGateway,
+        *,
+        sim_now_ns: int,
+    ) -> list[tuple[OrderIntent, str]]:
+        if not accepted_now:
+            return []
+
+        execution_errors = execution.apply_intents(accepted_now)
+        failed_keys = {
+            (it.instrument, it.client_order_id)
+            for it, _ in execution_errors
+        }
+
+        for it in accepted_now:
+            if (it.instrument, it.client_order_id) in failed_keys:
+                continue
+            if it.intent_type == "new":
+                self._process_canonical_order_submitted_event(
+                    it,
+                    ts_ns_local_dispatch=sim_now_ns,
+                )
+            self.strategy_state.mark_intent_sent(
+                it.instrument,
+                it.client_order_id,
+                it.intent_type,
+            )
+
+        return execution_errors
+
+    def _finalize_decision_effects(
+        self,
+        *,
+        decision: GateDecision,
+        execution: OrderSubmissionGateway,
+        sim_now_ns: int,
+        instrument: str,
+    ) -> None:
+        execution_errors = self._dispatch_accepted_intents(
+            decision.accepted_now,
+            execution,
+            sim_now_ns=sim_now_ns,
+        )
+
+        if execution_errors:
+            for it, reason in execution_errors:
+                decision.execution_rejected.append(
+                    RejectedIntent(it, reason)
+                )
+
+        self.strategy.on_risk_decision(decision)
+        self._apply_control_scheduling_decision(decision)
+
+        # If there are queued intents but the gate did not provide a next_send_ts_ns_local,
+        # wake up at the next second boundary to ensure progress.
+        if self._next_send_ts_ns_local is None:
+            queue = self.strategy_state.queued_intents.setdefault(
+                instrument,
+                deque(),
+            )
+            if queue:
+                sec = sim_now_ns // 1_000_000_000
+                self._next_send_ts_ns_local = (sec + 1) * 1_000_000_000
+
     def run(
         self,
         venue: VenueAdapter,
@@ -270,6 +357,7 @@ class HftStrategyRunner:
             sim_now_ns = self.strategy_state.sim_ts_ns_local
 
             raw_intents: list[OrderIntent] = []
+            control_step_result: CoreStepResult | None = None
 
             # -----------------------------------------------------------------
             # Market update
@@ -406,7 +494,9 @@ class HftStrategyRunner:
                     scheduled_deadline_ns
                     != self._last_injected_control_deadline_ns
                 ):
-                    self._process_canonical_control_time_event(
+                    control_step_result = self._process_canonical_control_time_event(
+                        instrument=instrument,
+                        now_ts_ns_local=sim_now_ns,
                         sim_now_ns=sim_now_ns,
                         scheduled_deadline_ns=scheduled_deadline_ns,
                         scheduling_obligation=scheduling_obligation,
@@ -416,8 +506,24 @@ class HftStrategyRunner:
                         self._consume_pending_control_scheduling_obligation()
                     else:
                         self._next_send_ts_ns_local = None
-                    raw_intents.extend(
-                        self.strategy_state.pop_queued_intents(instrument)
+
+            if control_step_result is not None:
+                if control_step_result.compat_gate_decision is not None:
+                    self._finalize_decision_effects(
+                        decision=control_step_result.compat_gate_decision,
+                        execution=execution,
+                        sim_now_ns=sim_now_ns,
+                        instrument=instrument,
+                    )
+                elif control_step_result.dispatchable_intents:
+                    self._dispatch_accepted_intents(
+                        list(control_step_result.dispatchable_intents),
+                        execution,
+                        sim_now_ns=sim_now_ns,
+                    )
+                elif control_step_result.control_scheduling_obligation is not None:
+                    self._apply_control_scheduling_obligation(
+                        control_step_result.control_scheduling_obligation
                     )
 
             # -----------------------------------------------------------------
@@ -431,50 +537,11 @@ class HftStrategyRunner:
                     state=self.strategy_state,
                     now_ts_ns_local=sim_now_ns,
                 )
-
-                execution_errors: list[tuple[OrderIntent, str]] = []
-                if decision.accepted_now:
-                    execution_errors = execution.apply_intents(
-                        decision.accepted_now
-                    )
-
-                    failed_keys = {
-                        (it.instrument, it.client_order_id)
-                        for it, _ in execution_errors
-                    }
-
-                    for it in decision.accepted_now:
-                        if (it.instrument, it.client_order_id) in failed_keys:
-                            continue
-                        if it.intent_type == "new":
-                            self._process_canonical_order_submitted_event(
-                                it,
-                                ts_ns_local_dispatch=sim_now_ns,
-                            )
-                        self.strategy_state.mark_intent_sent(
-                            it.instrument,
-                            it.client_order_id,
-                            it.intent_type,
-                        )
-
-                if execution_errors:
-                    for it, reason in execution_errors:
-                        decision.execution_rejected.append(
-                            RejectedIntent(it, reason)
-                        )
-
-                self.strategy.on_risk_decision(decision)
-                self._apply_control_scheduling_decision(decision)
-
-                # If there are queued intents but the gate did not provide a next_send_ts_ns_local,
-                # wake up at the next second boundary to ensure progress.
-                if self._next_send_ts_ns_local is None:
-                    queue = self.strategy_state.queued_intents.setdefault(
-                        instrument,
-                        deque(),
-                    )
-                    if queue:
-                        sec = sim_now_ns // 1_000_000_000
-                        self._next_send_ts_ns_local = (sec + 1) * 1_000_000_000
+                self._finalize_decision_effects(
+                    decision=decision,
+                    execution=execution,
+                    sim_now_ns=sim_now_ns,
+                    instrument=instrument,
+                )
 
             venue.record(recorder)

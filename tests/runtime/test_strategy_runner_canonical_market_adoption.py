@@ -6,6 +6,9 @@ from typing import Any
 
 import pytest
 from tradingchassis_core.core.domain.configuration import CoreConfiguration
+from tradingchassis_core.core.domain.processing_step import (
+    ControlTimeQueueReevaluationContext,
+)
 from tradingchassis_core.core.domain.state import StrategyState
 from tradingchassis_core.core.domain.step_result import CoreStepResult
 from tradingchassis_core.core.domain.types import (
@@ -970,8 +973,15 @@ def test_control_time_event_injected_when_scheduled_deadline_is_realized(
 
     control_events: list[ControlTimeEvent] = []
 
-    def _spy_run_core_step(state: object, entry: object, *, configuration: object) -> CoreStepResult:
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object,
+        control_time_queue_context: object | None = None,
+    ) -> CoreStepResult:
         _ = (state, configuration)
+        assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
         if isinstance(entry.event, ControlTimeEvent):
             control_events.append(entry.event)
         return CoreStepResult()
@@ -1005,10 +1015,16 @@ def test_control_time_realization_routes_through_run_core_step_with_expected_arg
     )
     runner._next_send_ts_ns_local = 5
 
-    captured_calls: list[tuple[object, object, object]] = []
+    captured_calls: list[tuple[object, object, object, object | None]] = []
 
-    def _spy_run_core_step(state: object, entry: object, *, configuration: object) -> CoreStepResult:
-        captured_calls.append((state, entry, configuration))
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object,
+        control_time_queue_context: object | None = None,
+    ) -> CoreStepResult:
+        captured_calls.append((state, entry, configuration, control_time_queue_context))
         return CoreStepResult()
 
     monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
@@ -1019,11 +1035,15 @@ def test_control_time_realization_routes_through_run_core_step_with_expected_arg
     runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
 
     assert len(captured_calls) == 1
-    state, entry, configuration = captured_calls[0]
+    state, entry, configuration, control_time_queue_context = captured_calls[0]
     assert state is runner.strategy_state
     assert configuration is runner._core_cfg
     assert isinstance(entry.event, ControlTimeEvent)
     assert entry.position.index == 0
+    assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
+    assert control_time_queue_context.risk_engine is runner.risk
+    assert control_time_queue_context.instrument == runner.engine_cfg.instrument
+    assert control_time_queue_context.now_ts_ns_local == 10
     assert runner._event_stream_cursor.next_index == 1
 
 
@@ -1054,8 +1074,15 @@ def test_control_time_event_uses_structured_obligation_fields_when_available(
 
     control_events: list[ControlTimeEvent] = []
 
-    def _spy_run_core_step(state: object, entry: object, *, configuration: object) -> CoreStepResult:
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object,
+        control_time_queue_context: object | None = None,
+    ) -> CoreStepResult:
         _ = (state, configuration)
+        assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
         if isinstance(entry.event, ControlTimeEvent):
             control_events.append(entry.event)
         return CoreStepResult()
@@ -1091,8 +1118,15 @@ def test_control_time_event_falls_back_when_structured_obligation_missing(
 
     control_events: list[ControlTimeEvent] = []
 
-    def _spy_run_core_step(state: object, entry: object, *, configuration: object) -> CoreStepResult:
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object,
+        control_time_queue_context: object | None = None,
+    ) -> CoreStepResult:
         _ = (state, configuration)
+        assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
         if isinstance(entry.event, ControlTimeEvent):
             control_events.append(entry.event)
         return CoreStepResult()
@@ -1178,9 +1212,16 @@ def test_control_time_deadline_injection_is_not_periodic_for_same_deadline(
     runner._next_send_ts_ns_local = 5
     control_count = 0
 
-    def _spy_run_core_step(state: object, entry: object, *, configuration: object) -> CoreStepResult:
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object,
+        control_time_queue_context: object | None = None,
+    ) -> CoreStepResult:
         nonlocal control_count
         _ = (state, configuration)
+        assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
         if isinstance(entry.event, ControlTimeEvent):
             control_count += 1
         return CoreStepResult()
@@ -1195,10 +1236,9 @@ def test_control_time_deadline_injection_is_not_periodic_for_same_deadline(
     assert control_count == 1
 
 
-def test_control_time_event_processed_before_pop_and_gate(
+def test_control_time_event_processed_through_core_step_context_without_runtime_pop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queued_intent = _new_intent()
     runner = HftStrategyRunner(
         engine_cfg=_engine_cfg(),
         strategy=_NoopStrategy(),
@@ -1207,28 +1247,34 @@ def test_control_time_event_processed_before_pop_and_gate(
     )
     runner._next_send_ts_ns_local = 5
 
-    ordering: list[str] = []
-    captured_raw_inputs: list[list[Any]] = []
-
-    def _spy_pop_queued_intents(instrument: str) -> list[Any]:
-        _ = instrument
-        ordering.append("pop")
-        return [queued_intent]
-
-    def _spy_run_core_step(state: object, entry: object, *, configuration: object) -> CoreStepResult:
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object,
+        control_time_queue_context: object | None = None,
+    ) -> CoreStepResult:
         _ = (state, configuration)
+        assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
         if isinstance(entry.event, ControlTimeEvent):
-            ordering.append("control")
+            assert entry.position.index == 0
         return CoreStepResult()
 
-    def _spy_decide_intents(**kwargs: Any) -> GateDecision:
-        ordering.append("gate")
-        captured_raw_inputs.append(list(kwargs["raw_intents"]))
-        return _decision_for([])
-
-    monkeypatch.setattr(runner.strategy_state, "pop_queued_intents", _spy_pop_queued_intents)
+    monkeypatch.setattr(
+        runner.strategy_state,
+        "pop_queued_intents",
+        lambda _: (_ for _ in ()).throw(
+            AssertionError("runtime must not pop queued intents for control-time re-evaluation")
+        ),
+    )
     monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
-    monkeypatch.setattr(runner.risk, "decide_intents", _spy_decide_intents)
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("runtime must not run risk gate for control-time queue directly")
+        ),
+    )
 
     venue = _StubVenue(
         rc_sequence=[0, 0, 1],
@@ -1236,12 +1282,10 @@ def test_control_time_event_processed_before_pop_and_gate(
     )
     runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
 
-    assert ordering == ["control", "pop", "gate"]
-    assert len(captured_raw_inputs) == 1
-    assert [it.client_order_id for it in captured_raw_inputs[0]] == [queued_intent.client_order_id]
+    assert runner._event_stream_cursor.next_index == 1
 
 
-def test_control_time_processing_failure_does_not_pop_or_mark_deadline(
+def test_control_time_processing_failure_does_not_mark_deadline_or_dispatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runner = HftStrategyRunner(
@@ -1254,22 +1298,27 @@ def test_control_time_processing_failure_does_not_pop_or_mark_deadline(
     runner._pending_control_scheduling_obligation = obligation
     runner._next_send_ts_ns_local = obligation.due_ts_ns_local
 
-    pop_count = 0
-
-    def _fail_run_core_step(state: object, entry: object, *, configuration: object) -> CoreStepResult:
+    def _fail_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object,
+        control_time_queue_context: object | None = None,
+    ) -> CoreStepResult:
         _ = (state, configuration)
+        assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
         if isinstance(entry.event, ControlTimeEvent):
             raise RuntimeError("boom")
         return CoreStepResult()
 
-    def _spy_pop_queued_intents(instrument: str) -> list[Any]:
-        nonlocal pop_count
-        _ = instrument
-        pop_count += 1
-        return []
-
     monkeypatch.setattr(strategy_runner_module, "run_core_step", _fail_run_core_step)
-    monkeypatch.setattr(runner.strategy_state, "pop_queued_intents", _spy_pop_queued_intents)
+    monkeypatch.setattr(
+        runner.strategy_state,
+        "pop_queued_intents",
+        lambda _: (_ for _ in ()).throw(
+            AssertionError("runtime queue pop must not run on control-time failure")
+        ),
+    )
 
     venue = _StubVenue(
         rc_sequence=[0, 0, 1],
@@ -1279,7 +1328,6 @@ def test_control_time_processing_failure_does_not_pop_or_mark_deadline(
     with pytest.raises(RuntimeError, match="boom"):
         runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
 
-    assert pop_count == 0
     assert runner._last_injected_control_deadline_ns is None
     assert runner._pending_control_scheduling_obligation == obligation
     assert runner._next_send_ts_ns_local == 5
@@ -1325,7 +1373,7 @@ def test_market_and_order_submitted_paths_remain_on_process_event_entry_path(
     assert process_event_names == ["MarketEvent", "OrderSubmittedEvent"]
 
 
-def test_control_time_success_consumes_pending_before_pop(
+def test_control_time_success_consumes_pending_obligation_after_core_step(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runner = HftStrategyRunner(
@@ -1338,21 +1386,25 @@ def test_control_time_success_consumes_pending_before_pop(
     runner._pending_control_scheduling_obligation = obligation
     runner._next_send_ts_ns_local = obligation.due_ts_ns_local
 
-    pop_count = 0
-
-    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object,
+        control_time_queue_context: object | None = None,
+    ) -> CoreStepResult:
         _ = (state, configuration)
+        assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
+        return CoreStepResult()
 
-    def _spy_pop_queued_intents(instrument: str) -> list[Any]:
-        nonlocal pop_count
-        _ = instrument
-        pop_count += 1
-        assert runner._pending_control_scheduling_obligation is None
-        assert runner._next_send_ts_ns_local is None
-        return []
-
-    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
-    monkeypatch.setattr(runner.strategy_state, "pop_queued_intents", _spy_pop_queued_intents)
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
+    monkeypatch.setattr(
+        runner.strategy_state,
+        "pop_queued_intents",
+        lambda _: (_ for _ in ()).throw(
+            AssertionError("runtime must not directly pop queued intents")
+        ),
+    )
 
     venue = _StubVenue(
         rc_sequence=[0, 0, 1],
@@ -1360,12 +1412,11 @@ def test_control_time_success_consumes_pending_before_pop(
     )
     runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
 
-    assert pop_count == 1
     assert runner._pending_control_scheduling_obligation is None
     assert runner._next_send_ts_ns_local is None
 
 
-def test_realized_old_deadline_does_not_pop_without_new_canonical_injection(
+def test_realized_old_deadline_does_not_runtime_pop_without_new_canonical_injection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runner = HftStrategyRunner(
@@ -1377,23 +1428,28 @@ def test_realized_old_deadline_does_not_pop_without_new_canonical_injection(
     runner._next_send_ts_ns_local = 5
 
     control_count = 0
-    pop_count = 0
-
-    def _spy_run_core_step(state: object, entry: object, *, configuration: object) -> CoreStepResult:
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object,
+        control_time_queue_context: object | None = None,
+    ) -> CoreStepResult:
         nonlocal control_count
         _ = (state, configuration)
+        assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
         if isinstance(entry.event, ControlTimeEvent):
             control_count += 1
         return CoreStepResult()
 
-    def _spy_pop_queued_intents(instrument: str) -> list[Any]:
-        nonlocal pop_count
-        _ = instrument
-        pop_count += 1
-        return []
-
     monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
-    monkeypatch.setattr(runner.strategy_state, "pop_queued_intents", _spy_pop_queued_intents)
+    monkeypatch.setattr(
+        runner.strategy_state,
+        "pop_queued_intents",
+        lambda _: (_ for _ in ()).throw(
+            AssertionError("runtime must not pop control-time queue directly")
+        ),
+    )
 
     venue = _StubVenue(
         rc_sequence=[0, 0, 0, 1],
@@ -1402,7 +1458,7 @@ def test_realized_old_deadline_does_not_pop_without_new_canonical_injection(
     runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
 
     assert control_count == 1
-    assert pop_count == 1
+    assert runner._event_stream_cursor.next_index == 1
 
 
 def test_global_canonical_counter_shared_with_control_time_market_and_submitted(
@@ -1429,8 +1485,15 @@ def test_global_canonical_counter_shared_with_control_time_market_and_submitted(
         _ = (state, configuration)
         positions.append((entry.position.index, type(entry.event).__name__))
 
-    def _spy_run_core_step(state: object, entry: object, *, configuration: object) -> CoreStepResult:
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object,
+        control_time_queue_context: object | None = None,
+    ) -> CoreStepResult:
         _ = (state, configuration)
+        assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
         positions.append((entry.position.index, type(entry.event).__name__))
         return CoreStepResult()
 
@@ -1449,6 +1512,153 @@ def test_global_canonical_counter_shared_with_control_time_market_and_submitted(
         (2, "OrderSubmittedEvent"),
     ]
     assert runner._event_stream_cursor.next_index == 3
+
+
+def test_control_time_core_step_result_dispatches_via_existing_execution_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control_intent = _new_intent(ts_ns_local=10)
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+    runner._next_send_ts_ns_local = 5
+
+    obligation = _obligation(due_ts_ns_local=25, obligation_key="control-obligation")
+    control_decision = _decision_for(
+        [control_intent],
+        next_send_ts_ns_local=25,
+        control_scheduling_obligations=(obligation,),
+    )
+
+    callbacks: list[GateDecision] = []
+    mark_calls: list[tuple[str, str, str]] = []
+    submitted_events: list[OrderSubmittedEvent] = []
+
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object,
+        control_time_queue_context: object | None = None,
+    ) -> CoreStepResult:
+        _ = (state, configuration)
+        assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
+        return CoreStepResult(
+            dispatchable_intents=(control_intent,),
+            compat_gate_decision=control_decision,
+            control_scheduling_obligation=obligation,
+        )
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        _ = (state, configuration)
+        if isinstance(entry.event, OrderSubmittedEvent):
+            submitted_events.append(entry.event)
+
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(runner.strategy, "on_risk_decision", lambda d: callbacks.append(d))
+    monkeypatch.setattr(
+        runner.strategy_state,
+        "mark_intent_sent",
+        lambda i, c, t: mark_calls.append((i, c, t)),
+    )
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("raw path risk gate should not run in this control-only wakeup")
+        ),
+    )
+
+    venue = _StubVenue(
+        rc_sequence=[0, 0, 1],
+        ts_sequence=[1, 10, 11],
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert len(submitted_events) == 1
+    assert submitted_events[0].client_order_id == control_intent.client_order_id
+    assert mark_calls == [(control_intent.instrument, control_intent.client_order_id, "new")]
+    assert callbacks == [control_decision]
+    assert runner._pending_control_scheduling_obligation == obligation
+    assert runner._next_send_ts_ns_local == obligation.due_ts_ns_local
+
+
+def test_same_wakeup_strategy_and_control_time_intents_are_processed_in_two_decisions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    strategy_intent = _new_intent(ts_ns_local=10)
+    control_intent = _new_intent(ts_ns_local=10)
+    control_intent = control_intent.model_copy(update={"client_order_id": "cid-control-1"})
+
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_EmitIntentsStrategy([strategy_intent]),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+    runner._next_send_ts_ns_local = 5
+
+    control_decision = _decision_for([control_intent])
+    strategy_decision = _decision_for([strategy_intent])
+
+    callback_order: list[str] = []
+
+    class _ExecutionCapture:
+        def __init__(self) -> None:
+            self.batches: list[list[str]] = []
+
+        def apply_intents(self, intents: list[Any]) -> list[tuple[Any, str]]:
+            self.batches.append([it.client_order_id for it in intents])
+            return []
+
+    execution = _ExecutionCapture()
+
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object,
+        control_time_queue_context: object | None = None,
+    ) -> CoreStepResult:
+        _ = (state, entry, configuration)
+        assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
+        return CoreStepResult(
+            dispatchable_intents=(control_intent,),
+            compat_gate_decision=control_decision,
+        )
+
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: strategy_decision,
+    )
+    monkeypatch.setattr(
+        runner.strategy,
+        "on_risk_decision",
+        lambda decision: callback_order.append(
+            "control"
+            if decision is control_decision
+            else "strategy"
+        ),
+    )
+
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 1],
+        ts_sequence=[1, 10, 11],
+        depth=_depth_snapshot(),
+    )
+    runner.run(venue=venue, execution=execution, recorder=_RecorderWrapper())
+
+    assert execution.batches == [
+        [control_intent.client_order_id],
+        [strategy_intent.client_order_id],
+    ]
+    assert callback_order == ["control", "strategy"]
 
 
 def test_fallback_second_boundary_wakeup_behavior_unchanged(
