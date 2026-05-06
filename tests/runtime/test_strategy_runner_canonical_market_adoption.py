@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from tradingchassis_core.core.domain.configuration import CoreConfiguration
 from tradingchassis_core.core.domain.state import StrategyState
+from tradingchassis_core.core.domain.step_result import CoreStepResult
 from tradingchassis_core.core.domain.types import (
     BookLevel,
     BookPayload,
@@ -969,12 +970,13 @@ def test_control_time_event_injected_when_scheduled_deadline_is_realized(
 
     control_events: list[ControlTimeEvent] = []
 
-    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+    def _spy_run_core_step(state: object, entry: object, *, configuration: object) -> CoreStepResult:
         _ = (state, configuration)
         if isinstance(entry.event, ControlTimeEvent):
             control_events.append(entry.event)
+        return CoreStepResult()
 
-    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
     venue = _StubVenue(
         rc_sequence=[0, 0, 1],
         ts_sequence=[1, 10, 11],
@@ -990,6 +992,39 @@ def test_control_time_event_injected_when_scheduled_deadline_is_realized(
     assert event.obligation_reason == "rate_limit"
     assert event.obligation_due_ts_ns_local == 5
     assert event.runtime_correlation is None
+
+
+def test_control_time_realization_routes_through_run_core_step_with_expected_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+    runner._next_send_ts_ns_local = 5
+
+    captured_calls: list[tuple[object, object, object]] = []
+
+    def _spy_run_core_step(state: object, entry: object, *, configuration: object) -> CoreStepResult:
+        captured_calls.append((state, entry, configuration))
+        return CoreStepResult()
+
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
+    venue = _StubVenue(
+        rc_sequence=[0, 0, 1],
+        ts_sequence=[1, 10, 11],
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert len(captured_calls) == 1
+    state, entry, configuration = captured_calls[0]
+    assert state is runner.strategy_state
+    assert configuration is runner._core_cfg
+    assert isinstance(entry.event, ControlTimeEvent)
+    assert entry.position.index == 0
+    assert runner._event_stream_cursor.next_index == 1
 
 
 def test_control_time_event_uses_structured_obligation_fields_when_available(
@@ -1019,12 +1054,13 @@ def test_control_time_event_uses_structured_obligation_fields_when_available(
 
     control_events: list[ControlTimeEvent] = []
 
-    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+    def _spy_run_core_step(state: object, entry: object, *, configuration: object) -> CoreStepResult:
         _ = (state, configuration)
         if isinstance(entry.event, ControlTimeEvent):
             control_events.append(entry.event)
+        return CoreStepResult()
 
-    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
     venue = _StubVenue(
         rc_sequence=[0, 2, 0, 1],
         ts_sequence=[1, 2, 10, 11],
@@ -1055,12 +1091,13 @@ def test_control_time_event_falls_back_when_structured_obligation_missing(
 
     control_events: list[ControlTimeEvent] = []
 
-    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+    def _spy_run_core_step(state: object, entry: object, *, configuration: object) -> CoreStepResult:
         _ = (state, configuration)
         if isinstance(entry.event, ControlTimeEvent):
             control_events.append(entry.event)
+        return CoreStepResult()
 
-    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
     venue = _StubVenue(
         rc_sequence=[0, 0, 1],
         ts_sequence=[1, 10, 11],
@@ -1141,13 +1178,14 @@ def test_control_time_deadline_injection_is_not_periodic_for_same_deadline(
     runner._next_send_ts_ns_local = 5
     control_count = 0
 
-    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+    def _spy_run_core_step(state: object, entry: object, *, configuration: object) -> CoreStepResult:
         nonlocal control_count
         _ = (state, configuration)
         if isinstance(entry.event, ControlTimeEvent):
             control_count += 1
+        return CoreStepResult()
 
-    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
     venue = _StubVenue(
         rc_sequence=[0, 0, 0, 1],
         ts_sequence=[1, 10, 10, 11],
@@ -1177,10 +1215,11 @@ def test_control_time_event_processed_before_pop_and_gate(
         ordering.append("pop")
         return [queued_intent]
 
-    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+    def _spy_run_core_step(state: object, entry: object, *, configuration: object) -> CoreStepResult:
         _ = (state, configuration)
         if isinstance(entry.event, ControlTimeEvent):
             ordering.append("control")
+        return CoreStepResult()
 
     def _spy_decide_intents(**kwargs: Any) -> GateDecision:
         ordering.append("gate")
@@ -1188,7 +1227,7 @@ def test_control_time_event_processed_before_pop_and_gate(
         return _decision_for([])
 
     monkeypatch.setattr(runner.strategy_state, "pop_queued_intents", _spy_pop_queued_intents)
-    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
     monkeypatch.setattr(runner.risk, "decide_intents", _spy_decide_intents)
 
     venue = _StubVenue(
@@ -1217,10 +1256,11 @@ def test_control_time_processing_failure_does_not_pop_or_mark_deadline(
 
     pop_count = 0
 
-    def _fail_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+    def _fail_run_core_step(state: object, entry: object, *, configuration: object) -> CoreStepResult:
         _ = (state, configuration)
         if isinstance(entry.event, ControlTimeEvent):
             raise RuntimeError("boom")
+        return CoreStepResult()
 
     def _spy_pop_queued_intents(instrument: str) -> list[Any]:
         nonlocal pop_count
@@ -1228,7 +1268,7 @@ def test_control_time_processing_failure_does_not_pop_or_mark_deadline(
         pop_count += 1
         return []
 
-    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _fail_process_event_entry)
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _fail_run_core_step)
     monkeypatch.setattr(runner.strategy_state, "pop_queued_intents", _spy_pop_queued_intents)
 
     venue = _StubVenue(
@@ -1243,6 +1283,46 @@ def test_control_time_processing_failure_does_not_pop_or_mark_deadline(
     assert runner._last_injected_control_deadline_ns is None
     assert runner._pending_control_scheduling_obligation == obligation
     assert runner._next_send_ts_ns_local == 5
+    assert runner._event_stream_cursor.next_index == 0
+
+
+def test_market_and_order_submitted_paths_remain_on_process_event_entry_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    new_intent = _new_intent()
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_EmitIntentsStrategy([new_intent]),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: _decision_for([new_intent]),
+    )
+
+    process_event_names: list[str] = []
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        _ = (state, configuration)
+        process_event_names.append(type(entry.event).__name__)
+
+    def _fail_run_core_step(*args: object, **kwargs: object) -> CoreStepResult:
+        _ = (args, kwargs)
+        raise AssertionError("run_core_step must not be used for market/order-submitted path")
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _fail_run_core_step)
+
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 1],
+        ts_sequence=[1, 10, 11],
+        depth=_depth_snapshot(),
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert process_event_names == ["MarketEvent", "OrderSubmittedEvent"]
 
 
 def test_control_time_success_consumes_pending_before_pop(
@@ -1299,11 +1379,12 @@ def test_realized_old_deadline_does_not_pop_without_new_canonical_injection(
     control_count = 0
     pop_count = 0
 
-    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+    def _spy_run_core_step(state: object, entry: object, *, configuration: object) -> CoreStepResult:
         nonlocal control_count
         _ = (state, configuration)
         if isinstance(entry.event, ControlTimeEvent):
             control_count += 1
+        return CoreStepResult()
 
     def _spy_pop_queued_intents(instrument: str) -> list[Any]:
         nonlocal pop_count
@@ -1311,7 +1392,7 @@ def test_realized_old_deadline_does_not_pop_without_new_canonical_injection(
         pop_count += 1
         return []
 
-    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
     monkeypatch.setattr(runner.strategy_state, "pop_queued_intents", _spy_pop_queued_intents)
 
     venue = _StubVenue(
@@ -1348,7 +1429,13 @@ def test_global_canonical_counter_shared_with_control_time_market_and_submitted(
         _ = (state, configuration)
         positions.append((entry.position.index, type(entry.event).__name__))
 
+    def _spy_run_core_step(state: object, entry: object, *, configuration: object) -> CoreStepResult:
+        _ = (state, configuration)
+        positions.append((entry.position.index, type(entry.event).__name__))
+        return CoreStepResult()
+
     monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
     venue = _StubVenue(
         rc_sequence=[0, 2, 1],
         ts_sequence=[1, 10, 11],

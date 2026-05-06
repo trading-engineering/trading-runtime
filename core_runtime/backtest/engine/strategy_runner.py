@@ -7,6 +7,7 @@ from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from tradingchassis_core import run_core_step
 from tradingchassis_core.core.domain.configuration import CoreConfiguration
 from tradingchassis_core.core.domain.processing import process_event_entry
 from tradingchassis_core.core.domain.processing_order import (
@@ -186,7 +187,17 @@ class HftStrategyRunner:
             obligation_due_ts_ns_local=obligation_due_ts_ns_local,
             runtime_correlation=None,
         )
-        self._process_canonical_event(control_time_event)
+        position = self._event_stream_cursor.attempt_position()
+        entry = EventStreamEntry(
+            position=position,
+            event=control_time_event,
+        )
+        _ = run_core_step(
+            self.strategy_state,
+            entry,
+            configuration=self._core_cfg,
+        )
+        self._event_stream_cursor.commit_success(position)
 
     @staticmethod
     def _select_effective_control_scheduling_obligation(

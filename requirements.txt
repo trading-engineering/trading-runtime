@@ -307,7 +307,7 @@ tornado==6.5.4
     # via bokeh
 tqdm==4.67.3
     # via panel
-tradingchassis-core @ git+https://github.com/TradingChassis/core.git@922d47e2835145efbd70e6be5f1199b1520f2430
+tradingchassis-core @ git+https://github.com/TradingChassis/core.git@aa91f9273f1a739de1ada5f3283025c1c21f58d7
     # via -r _git_deps.in
 typing-extensions==4.15.0
     # via
