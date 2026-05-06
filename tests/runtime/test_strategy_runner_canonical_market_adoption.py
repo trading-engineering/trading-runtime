@@ -259,6 +259,96 @@ def _decision_for(
     )
 
 
+def _obligation(
+    *,
+    due_ts_ns_local: int,
+    obligation_key: str,
+    reason: str = "rate_limit",
+) -> ControlSchedulingObligation:
+    return ControlSchedulingObligation(
+        due_ts_ns_local=due_ts_ns_local,
+        reason=reason,
+        scope_key="instrument:BTC_USDC-PERPETUAL",
+        source="execution_control_rate_limit",
+        obligation_key=obligation_key,
+    )
+
+
+def _runner_for_scheduling_helpers() -> HftStrategyRunner:
+    runner = object.__new__(HftStrategyRunner)
+    runner._pending_control_scheduling_obligation = None
+    runner._next_send_ts_ns_local = None
+    runner._last_injected_control_deadline_ns = None
+    return runner
+
+
+def test_select_effective_control_scheduling_obligation_collapses_deterministically() -> None:
+    decision = _decision_for(
+        [],
+        control_scheduling_obligations=(
+            _obligation(due_ts_ns_local=7, obligation_key="z-key"),
+            _obligation(due_ts_ns_local=5, obligation_key="z-key"),
+            _obligation(due_ts_ns_local=5, obligation_key="a-key"),
+        ),
+    )
+
+    selected = HftStrategyRunner._select_effective_control_scheduling_obligation(decision)
+
+    assert selected is not None
+    assert selected.due_ts_ns_local == 5
+    assert selected.obligation_key == "a-key"
+
+
+def test_apply_control_scheduling_decision_sets_pending_and_mirror() -> None:
+    runner = _runner_for_scheduling_helpers()
+    obligation = _obligation(due_ts_ns_local=5, obligation_key="k1")
+    decision = _decision_for([], control_scheduling_obligations=(obligation,))
+
+    runner._apply_control_scheduling_decision(decision)
+
+    assert runner._pending_control_scheduling_obligation == obligation
+    assert runner._next_send_ts_ns_local == 5
+
+
+def test_apply_control_scheduling_decision_replaces_pending_same_due_different_key() -> None:
+    runner = _runner_for_scheduling_helpers()
+    obligation_a = _obligation(due_ts_ns_local=5, obligation_key="a-key")
+    obligation_b = _obligation(due_ts_ns_local=5, obligation_key="b-key")
+
+    runner._apply_control_scheduling_decision(
+        _decision_for([], control_scheduling_obligations=(obligation_a,))
+    )
+    runner._apply_control_scheduling_decision(
+        _decision_for([], control_scheduling_obligations=(obligation_b,))
+    )
+
+    assert runner._pending_control_scheduling_obligation == obligation_b
+    assert runner._next_send_ts_ns_local == 5
+
+
+def test_apply_control_scheduling_decision_clears_pending_when_no_obligation() -> None:
+    runner = _runner_for_scheduling_helpers()
+    obligation = _obligation(due_ts_ns_local=5, obligation_key="k1")
+    runner._apply_control_scheduling_decision(
+        _decision_for([], control_scheduling_obligations=(obligation,))
+    )
+
+    runner._apply_control_scheduling_decision(_decision_for([]))
+
+    assert runner._pending_control_scheduling_obligation is None
+    assert runner._next_send_ts_ns_local is None
+
+
+def test_apply_control_scheduling_decision_scalar_fallback_without_structured_obligation() -> None:
+    runner = _runner_for_scheduling_helpers()
+    decision = _decision_for([], next_send_ts_ns_local=12)
+
+    runner._apply_control_scheduling_decision(decision)
+
+    assert runner._pending_control_scheduling_obligation is None
+    assert runner._next_send_ts_ns_local == 12
+
+
 def test_process_market_event_routes_through_event_entry_with_core_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -961,7 +1051,7 @@ def test_control_time_event_falls_back_when_structured_obligation_missing(
         core_cfg=_core_cfg(),
     )
     runner._next_send_ts_ns_local = 5
-    runner._selected_control_scheduling_obligation = None
+    runner._pending_control_scheduling_obligation = None
 
     control_events: list[ControlTimeEvent] = []
 
@@ -1121,7 +1211,9 @@ def test_control_time_processing_failure_does_not_pop_or_mark_deadline(
         risk_cfg=_risk_cfg(),
         core_cfg=_core_cfg(),
     )
-    runner._next_send_ts_ns_local = 5
+    obligation = _obligation(due_ts_ns_local=5, obligation_key="k-failure")
+    runner._pending_control_scheduling_obligation = obligation
+    runner._next_send_ts_ns_local = obligation.due_ts_ns_local
 
     pop_count = 0
 
@@ -1149,6 +1241,48 @@ def test_control_time_processing_failure_does_not_pop_or_mark_deadline(
 
     assert pop_count == 0
     assert runner._last_injected_control_deadline_ns is None
+    assert runner._pending_control_scheduling_obligation == obligation
+    assert runner._next_send_ts_ns_local == 5
+
+
+def test_control_time_success_consumes_pending_before_pop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+    obligation = _obligation(due_ts_ns_local=5, obligation_key="k-success")
+    runner._pending_control_scheduling_obligation = obligation
+    runner._next_send_ts_ns_local = obligation.due_ts_ns_local
+
+    pop_count = 0
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        _ = (state, configuration)
+
+    def _spy_pop_queued_intents(instrument: str) -> list[Any]:
+        nonlocal pop_count
+        _ = instrument
+        pop_count += 1
+        assert runner._pending_control_scheduling_obligation is None
+        assert runner._next_send_ts_ns_local is None
+        return []
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(runner.strategy_state, "pop_queued_intents", _spy_pop_queued_intents)
+
+    venue = _StubVenue(
+        rc_sequence=[0, 0, 1],
+        ts_sequence=[1, 10, 11],
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert pop_count == 1
+    assert runner._pending_control_scheduling_obligation is None
+    assert runner._next_send_ts_ns_local is None
 
 
 def test_realized_old_deadline_does_not_pop_without_new_canonical_injection(

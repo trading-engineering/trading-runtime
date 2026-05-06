@@ -87,7 +87,7 @@ class HftStrategyRunner:
         self._next_send_ts_ns_local: int | None = None
         self._event_stream_cursor = EventStreamCursor()
         self._last_injected_control_deadline_ns: int | None = None
-        self._selected_control_scheduling_obligation: ControlSchedulingObligation | None = None
+        self._pending_control_scheduling_obligation: ControlSchedulingObligation | None = None
 
     def _process_canonical_event(self, event: object) -> None:
         position = self._event_stream_cursor.attempt_position()
@@ -189,15 +189,45 @@ class HftStrategyRunner:
         self._process_canonical_event(control_time_event)
 
     @staticmethod
-    def _select_control_scheduling_obligation(
+    def _select_effective_control_scheduling_obligation(
         decision: GateDecision,
     ) -> ControlSchedulingObligation | None:
-        if decision.next_send_ts_ns_local is None:
+        obligations = decision.control_scheduling_obligations
+        if not obligations:
             return None
-        for obligation in decision.control_scheduling_obligations:
-            if obligation.due_ts_ns_local == decision.next_send_ts_ns_local:
-                return obligation
-        return None
+        return min(
+            obligations,
+            key=lambda obligation: (
+                obligation.due_ts_ns_local,
+                obligation.obligation_key,
+            ),
+        )
+
+    def _clear_pending_control_scheduling_obligation(self) -> None:
+        self._pending_control_scheduling_obligation = None
+        self._next_send_ts_ns_local = None
+
+    def _consume_pending_control_scheduling_obligation(
+        self,
+    ) -> ControlSchedulingObligation | None:
+        pending = self._pending_control_scheduling_obligation
+        self._clear_pending_control_scheduling_obligation()
+        return pending
+
+    def _apply_control_scheduling_decision(
+        self,
+        decision: GateDecision,
+    ) -> None:
+        selected = self._select_effective_control_scheduling_obligation(decision)
+        if selected is None:
+            self._pending_control_scheduling_obligation = None
+            self._next_send_ts_ns_local = decision.next_send_ts_ns_local
+            return
+        if self._pending_control_scheduling_obligation == selected:
+            self._next_send_ts_ns_local = selected.due_ts_ns_local
+            return
+        self._pending_control_scheduling_obligation = selected
+        self._next_send_ts_ns_local = selected.due_ts_ns_local
 
     def run(
         self,
@@ -350,11 +380,17 @@ class HftStrategyRunner:
             # Queue flush
             # -----------------------------------------------------------------
             scheduled_deadline_ns: int | None = None
-            if (
-                self._next_send_ts_ns_local is not None
-                and sim_now_ns >= self._next_send_ts_ns_local
-            ):
+            scheduling_obligation: ControlSchedulingObligation | None = None
+            if self._pending_control_scheduling_obligation is not None:
+                scheduling_obligation = self._pending_control_scheduling_obligation
+                scheduled_deadline_ns = scheduling_obligation.due_ts_ns_local
+            elif self._next_send_ts_ns_local is not None:
+                # Transitional compatibility for scalar-only decisions.
                 scheduled_deadline_ns = self._next_send_ts_ns_local
+            if (
+                scheduled_deadline_ns is not None
+                and sim_now_ns >= scheduled_deadline_ns
+            ):
                 if (
                     scheduled_deadline_ns
                     != self._last_injected_control_deadline_ns
@@ -362,9 +398,13 @@ class HftStrategyRunner:
                     self._process_canonical_control_time_event(
                         sim_now_ns=sim_now_ns,
                         scheduled_deadline_ns=scheduled_deadline_ns,
-                        scheduling_obligation=self._selected_control_scheduling_obligation,
+                        scheduling_obligation=scheduling_obligation,
                     )
                     self._last_injected_control_deadline_ns = scheduled_deadline_ns
+                    if scheduling_obligation is not None:
+                        self._consume_pending_control_scheduling_obligation()
+                    else:
+                        self._next_send_ts_ns_local = None
                     raw_intents.extend(
                         self.strategy_state.pop_queued_intents(instrument)
                     )
@@ -413,15 +453,11 @@ class HftStrategyRunner:
                         )
 
                 self.strategy.on_risk_decision(decision)
-                self._next_send_ts_ns_local = decision.next_send_ts_ns_local
-                self._selected_control_scheduling_obligation = (
-                    self._select_control_scheduling_obligation(decision)
-                )
+                self._apply_control_scheduling_decision(decision)
 
                 # If there are queued intents but the gate did not provide a next_send_ts_ns_local,
                 # wake up at the next second boundary to ensure progress.
                 if self._next_send_ts_ns_local is None:
-                    self._selected_control_scheduling_obligation = None
                     queue = self.strategy_state.queued_intents.setdefault(
                         instrument,
                         deque(),
