@@ -21,6 +21,9 @@ from tradingchassis_core.core.domain.types import (
     ReplaceOrderIntent,
 )
 from tradingchassis_core.core.events.event_bus import EventBus
+from tradingchassis_core.core.execution_control.types import (
+    ControlSchedulingObligation,
+)
 from tradingchassis_core.core.risk.risk_config import RiskConfig
 from tradingchassis_core.core.risk.risk_engine import GateDecision
 from tradingchassis_core.strategies.base import Strategy
@@ -236,7 +239,12 @@ class _EmitIntentsStrategy(Strategy):
         _ = decision
 
 
-def _decision_for(accepted_now: list[Any]) -> GateDecision:
+def _decision_for(
+    accepted_now: list[Any],
+    *,
+    next_send_ts_ns_local: int | None = None,
+    control_scheduling_obligations: tuple[ControlSchedulingObligation, ...] = (),
+) -> GateDecision:
     return GateDecision(
         ts_ns_local=2,
         accepted_now=accepted_now,
@@ -246,7 +254,8 @@ def _decision_for(accepted_now: list[Any]) -> GateDecision:
         dropped_in_queue=[],
         handled_in_queue=[],
         execution_rejected=[],
-        next_send_ts_ns_local=None,
+        next_send_ts_ns_local=next_send_ts_ns_local,
+        control_scheduling_obligations=control_scheduling_obligations,
     )
 
 
@@ -891,6 +900,87 @@ def test_control_time_event_injected_when_scheduled_deadline_is_realized(
     assert event.obligation_reason == "rate_limit"
     assert event.obligation_due_ts_ns_local == 5
     assert event.runtime_correlation is None
+
+
+def test_control_time_event_uses_structured_obligation_fields_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_EmitIntentsStrategy([_new_intent()]),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+    obligation = ControlSchedulingObligation(
+        due_ts_ns_local=5,
+        reason="custom_backpressure_reason",
+        scope_key="instrument:BTC_USDC-PERPETUAL",
+        source="execution_control_rate_limit",
+    )
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: _decision_for(
+            [],
+            next_send_ts_ns_local=5,
+            control_scheduling_obligations=(obligation,),
+        ),
+    )
+
+    control_events: list[ControlTimeEvent] = []
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        _ = (state, configuration)
+        if isinstance(entry.event, ControlTimeEvent):
+            control_events.append(entry.event)
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 0, 1],
+        ts_sequence=[1, 2, 10, 11],
+        depth=_depth_snapshot(),
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert len(control_events) == 1
+    event = control_events[0]
+    assert event.reason == "scheduled_control_recheck"
+    assert event.due_ts_ns_local == 5
+    assert event.realized_ts_ns_local == 10
+    assert event.obligation_reason == "custom_backpressure_reason"
+    assert event.obligation_due_ts_ns_local == 5
+
+
+def test_control_time_event_falls_back_when_structured_obligation_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+    runner._next_send_ts_ns_local = 5
+    runner._selected_control_scheduling_obligation = None
+
+    control_events: list[ControlTimeEvent] = []
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        _ = (state, configuration)
+        if isinstance(entry.event, ControlTimeEvent):
+            control_events.append(entry.event)
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    venue = _StubVenue(
+        rc_sequence=[0, 0, 1],
+        ts_sequence=[1, 10, 11],
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert len(control_events) == 1
+    event = control_events[0]
+    assert event.obligation_reason == "rate_limit"
+    assert event.obligation_due_ts_ns_local == 5
 
 
 def test_no_control_time_event_when_no_deadline_scheduled(

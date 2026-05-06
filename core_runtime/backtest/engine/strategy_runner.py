@@ -26,9 +26,16 @@ from tradingchassis_core.core.domain.types import (
 )
 from tradingchassis_core.core.events.event_bus import EventBus
 from tradingchassis_core.core.events.sinks.sink_logging import LoggingEventSink
+from tradingchassis_core.core.execution_control.types import (
+    ControlSchedulingObligation,
+)
 from tradingchassis_core.core.ports.venue_adapter import VenueAdapter
 from tradingchassis_core.core.risk.risk_config import RiskConfig
-from tradingchassis_core.core.risk.risk_engine import RejectedIntent, RiskEngine
+from tradingchassis_core.core.risk.risk_engine import (
+    GateDecision,
+    RejectedIntent,
+    RiskEngine,
+)
 
 from core_runtime.backtest.adapters.protocols import OrderSubmissionGateway
 from core_runtime.backtest.engine.event_stream_cursor import EventStreamCursor
@@ -80,6 +87,7 @@ class HftStrategyRunner:
         self._next_send_ts_ns_local: int | None = None
         self._event_stream_cursor = EventStreamCursor()
         self._last_injected_control_deadline_ns: int | None = None
+        self._selected_control_scheduling_obligation: ControlSchedulingObligation | None = None
 
     def _process_canonical_event(self, event: object) -> None:
         position = self._event_stream_cursor.attempt_position()
@@ -162,17 +170,34 @@ class HftStrategyRunner:
         *,
         sim_now_ns: int,
         scheduled_deadline_ns: int,
+        scheduling_obligation: ControlSchedulingObligation | None = None,
     ) -> None:
+        obligation_reason = "rate_limit"
+        obligation_due_ts_ns_local = scheduled_deadline_ns
+        if scheduling_obligation is not None:
+            obligation_reason = scheduling_obligation.reason
+            obligation_due_ts_ns_local = scheduling_obligation.due_ts_ns_local
         control_time_event = ControlTimeEvent(
             ts_ns_local_control=sim_now_ns,
             reason="scheduled_control_recheck",
             due_ts_ns_local=scheduled_deadline_ns,
             realized_ts_ns_local=sim_now_ns,
-            obligation_reason="rate_limit",
-            obligation_due_ts_ns_local=scheduled_deadline_ns,
+            obligation_reason=obligation_reason,
+            obligation_due_ts_ns_local=obligation_due_ts_ns_local,
             runtime_correlation=None,
         )
         self._process_canonical_event(control_time_event)
+
+    @staticmethod
+    def _select_control_scheduling_obligation(
+        decision: GateDecision,
+    ) -> ControlSchedulingObligation | None:
+        if decision.next_send_ts_ns_local is None:
+            return None
+        for obligation in decision.control_scheduling_obligations:
+            if obligation.due_ts_ns_local == decision.next_send_ts_ns_local:
+                return obligation
+        return None
 
     def run(
         self,
@@ -337,6 +362,7 @@ class HftStrategyRunner:
                     self._process_canonical_control_time_event(
                         sim_now_ns=sim_now_ns,
                         scheduled_deadline_ns=scheduled_deadline_ns,
+                        scheduling_obligation=self._selected_control_scheduling_obligation,
                     )
                     self._last_injected_control_deadline_ns = scheduled_deadline_ns
                     raw_intents.extend(
@@ -388,10 +414,14 @@ class HftStrategyRunner:
 
                 self.strategy.on_risk_decision(decision)
                 self._next_send_ts_ns_local = decision.next_send_ts_ns_local
+                self._selected_control_scheduling_obligation = (
+                    self._select_control_scheduling_obligation(decision)
+                )
 
                 # If there are queued intents but the gate did not provide a next_send_ts_ns_local,
                 # wake up at the next second boundary to ensure progress.
                 if self._next_send_ts_ns_local is None:
+                    self._selected_control_scheduling_obligation = None
                     queue = self.strategy_state.queued_intents.setdefault(
                         instrument,
                         deque(),
