@@ -8,6 +8,8 @@ import pytest
 from tradingchassis_core.core.domain.configuration import CoreConfiguration
 from tradingchassis_core.core.domain.processing_step import (
     ControlTimeQueueReevaluationContext,
+    CoreExecutionControlApplyContext,
+    CorePolicyAdmissionContext,
 )
 from tradingchassis_core.core.domain.state import StrategyState
 from tradingchassis_core.core.domain.step_result import CoreStepResult
@@ -148,6 +150,21 @@ def _risk_cfg() -> RiskConfig:
     return RiskConfig(
         scope="test",
         notional_limits={"currency": "USDC", "max_gross_notional": 1.0},
+    )
+
+
+def _risk_cfg_with_rate_limits(
+    *,
+    max_orders_per_second: float,
+    max_cancels_per_second: float,
+) -> RiskConfig:
+    return RiskConfig(
+        scope="test",
+        notional_limits={"currency": "USDC", "max_gross_notional": 1.0},
+        order_rate_limits={
+            "max_orders_per_second": max_orders_per_second,
+            "max_cancels_per_second": max_cancels_per_second,
+        },
     )
 
 
@@ -369,13 +386,17 @@ def test_process_market_event_routes_through_event_entry_with_core_configuration
         state: object,
         entry: object,
         *,
-        configuration: object,
+        configuration: object | None = None,
         control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
         core_decision_context: object | None = None,
         strategy_evaluator: object | None = None,
     ) -> CoreStepResult:
         _ = state
         _ = core_decision_context
+        assert policy_admission_context is None
+        assert execution_control_apply_context is None
         captured.append((entry.position.index, configuration, strategy_evaluator))
         assert control_time_queue_context is None
         return CoreStepResult()
@@ -413,13 +434,17 @@ def test_first_canonical_event_uses_processing_position_zero(
         state: object,
         entry: object,
         *,
-        configuration: object,
+        configuration: object | None = None,
         control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
         core_decision_context: object | None = None,
         strategy_evaluator: object | None = None,
     ) -> CoreStepResult:
         _ = state
         _ = (control_time_queue_context, core_decision_context, strategy_evaluator)
+        assert policy_admission_context is None
+        assert execution_control_apply_context is None
         assert configuration is runner._core_cfg
         captured.append(entry.position.index)
         return CoreStepResult()
@@ -462,13 +487,17 @@ def test_market_branch_calls_canonical_boundary_not_update_market(
         state: object,
         entry: object,
         *,
-        configuration: object,
+        configuration: object | None = None,
         control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
         core_decision_context: object | None = None,
         strategy_evaluator: object | None = None,
     ) -> CoreStepResult:
         _ = state
         _ = (control_time_queue_context, core_decision_context)
+        assert policy_admission_context is None
+        assert execution_control_apply_context is None
         assert strategy_evaluator is not None
         captured.append((entry.position.index, configuration, type(entry.event).__name__))
         return CoreStepResult()
@@ -527,13 +556,17 @@ def test_market_mapping_from_depth_snapshot_is_deterministic_golden(
         state: object,
         entry: object,
         *,
-        configuration: object,
+        configuration: object | None = None,
         control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
         core_decision_context: object | None = None,
         strategy_evaluator: object | None = None,
     ) -> CoreStepResult:
         _ = (state, configuration)
         _ = (control_time_queue_context, core_decision_context, strategy_evaluator)
+        assert policy_admission_context is None
+        assert execution_control_apply_context is None
         if isinstance(entry.event, MarketEvent):
             captured_market_events.append(entry.event)
         return CoreStepResult()
@@ -595,13 +628,17 @@ def test_market_branch_strategy_evaluator_preserves_legacy_on_feed_arguments(
         state: object,
         entry: object,
         *,
-        configuration: object,
+        configuration: object | None = None,
         control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
         core_decision_context: object | None = None,
         strategy_evaluator: object | None = None,
     ) -> CoreStepResult:
         _ = core_decision_context
         assert control_time_queue_context is None
+        assert policy_admission_context is None
+        assert execution_control_apply_context is None
         assert strategy_evaluator is not None
         evaluated = strategy_evaluator.evaluate(
             SimpleNamespace(
@@ -635,6 +672,486 @@ def test_market_branch_strategy_evaluator_preserves_legacy_on_feed_arguments(
     assert constraints_arg is constraints_obj
     assert len(risk_calls) == 1
     assert risk_calls[0] == [generated_intent]
+
+
+def test_market_core_step_mode_calls_run_core_step_with_policy_and_apply_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg_with_rate_limits(
+            max_orders_per_second=7.0,
+            max_cancels_per_second=3.0,
+        ),
+        core_cfg=_core_cfg(),
+        enable_core_step_market_dispatch=True,
+    )
+
+    captured: list[tuple[object, object, object, object]] = []
+
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object | None = None,
+        control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
+        core_decision_context: object | None = None,
+        strategy_evaluator: object | None = None,
+    ) -> CoreStepResult:
+        _ = core_decision_context
+        assert control_time_queue_context is None
+        assert strategy_evaluator is not None
+        captured.append(
+            (
+                state,
+                configuration,
+                policy_admission_context,
+                execution_control_apply_context,
+            )
+        )
+        return CoreStepResult(generated_intents=(_new_intent(),))
+
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("market core-step mode must not call runtime risk gate")
+        ),
+    )
+
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 1],
+        ts_sequence=[1, 2_000_000_000, 2_000_000_001],
+        depth=_depth_snapshot(),
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert len(captured) == 1
+    state, configuration, policy_ctx, apply_ctx = captured[0]
+    assert state is runner.strategy_state
+    assert configuration is runner._core_cfg
+    assert isinstance(policy_ctx, CorePolicyAdmissionContext)
+    assert policy_ctx.policy_evaluator is runner.risk
+    assert policy_ctx.now_ts_ns_local == 2_000_000_000
+    assert isinstance(apply_ctx, CoreExecutionControlApplyContext)
+    assert apply_ctx.execution_control is runner.risk.execution_control
+    assert apply_ctx.now_ts_ns_local == 2_000_000_000
+    assert apply_ctx.max_orders_per_sec == 7.0
+    assert apply_ctx.max_cancels_per_sec == 3.0
+    assert apply_ctx.activate_dispatchable_outputs is True
+
+
+def test_market_core_step_mode_dispatches_core_step_dispatchable_intents_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generated_intent = _new_intent(ts_ns_local=2)
+    dispatchable_intent = _new_intent(ts_ns_local=2).model_copy(
+        update={"client_order_id": "cid-dispatchable-only"}
+    )
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_EmitIntentsStrategy([generated_intent]),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_market_dispatch=True,
+    )
+
+    class _ExecutionCapture:
+        def __init__(self) -> None:
+            self.batches: list[list[str]] = []
+
+        def apply_intents(self, intents: list[Any]) -> list[tuple[Any, str]]:
+            self.batches.append([it.client_order_id for it in intents])
+            return []
+
+    execution = _ExecutionCapture()
+
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object | None = None,
+        control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
+        core_decision_context: object | None = None,
+        strategy_evaluator: object | None = None,
+    ) -> CoreStepResult:
+        _ = (
+            state,
+            entry,
+            configuration,
+            control_time_queue_context,
+            policy_admission_context,
+            execution_control_apply_context,
+            core_decision_context,
+            strategy_evaluator,
+        )
+        return CoreStepResult(
+            generated_intents=(generated_intent,),
+            dispatchable_intents=(dispatchable_intent,),
+        )
+
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("market core-step mode must not call runtime risk gate")
+        ),
+    )
+
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 1],
+        ts_sequence=[1, 2, 3],
+        depth=_depth_snapshot(),
+    )
+    runner.run(venue=venue, execution=execution, recorder=_RecorderWrapper())
+
+    assert execution.batches == [[dispatchable_intent.client_order_id]]
+
+
+def test_market_core_step_mode_applies_obligation_and_clears_when_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_market_dispatch=True,
+    )
+    seeded = _obligation(due_ts_ns_local=9_999_999_999, obligation_key="seeded")
+    runner._pending_control_scheduling_obligation = seeded
+    runner._next_send_ts_ns_local = seeded.due_ts_ns_local
+    obligation = _obligation(due_ts_ns_local=25, obligation_key="core-step-obligation")
+
+    results = [
+        CoreStepResult(control_scheduling_obligation=obligation),
+        CoreStepResult(control_scheduling_obligation=None),
+    ]
+
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object | None = None,
+        control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
+        core_decision_context: object | None = None,
+        strategy_evaluator: object | None = None,
+    ) -> CoreStepResult:
+        _ = (
+            state,
+            entry,
+            configuration,
+            control_time_queue_context,
+            policy_admission_context,
+            execution_control_apply_context,
+            core_decision_context,
+            strategy_evaluator,
+        )
+        return results.pop(0)
+
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("market core-step mode must not call runtime risk gate")
+        ),
+    )
+
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 2, 1],
+        ts_sequence=[1, 2, 3, 4],
+        depth=_depth_snapshot(),
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert runner._pending_control_scheduling_obligation is None
+    assert runner._next_send_ts_ns_local is None
+
+
+def test_market_core_step_mode_preserves_order_submitted_before_mark_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatchable_new = _new_intent()
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_market_dispatch=True,
+    )
+    ordering: list[str] = []
+    submitted_events: list[OrderSubmittedEvent] = []
+    marks: list[tuple[str, str, str]] = []
+
+    monkeypatch.setattr(
+        strategy_runner_module,
+        "run_core_step",
+        lambda *args, **kwargs: CoreStepResult(
+            dispatchable_intents=(dispatchable_new,),
+        ),
+    )
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("market core-step mode must not call runtime risk gate")
+        ),
+    )
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        _ = (state, configuration)
+        if isinstance(entry.event, OrderSubmittedEvent):
+            ordering.append("submitted")
+            submitted_events.append(entry.event)
+
+    def _spy_mark_intent_sent(instrument: str, client_order_id: str, intent_type: str) -> None:
+        ordering.append("mark")
+        marks.append((instrument, client_order_id, intent_type))
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(runner.strategy_state, "mark_intent_sent", _spy_mark_intent_sent)
+
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 1],
+        ts_sequence=[1_111, 5_000_000_000, 5_000_000_001],
+        depth=_depth_snapshot(),
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert len(submitted_events) == 1
+    assert ordering == ["submitted", "mark"]
+    assert marks == [
+        (dispatchable_new.instrument, dispatchable_new.client_order_id, "new")
+    ]
+
+
+def test_market_core_step_mode_failed_new_dispatch_emits_no_order_submitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatchable_new = _new_intent()
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_market_dispatch=True,
+    )
+    submitted_event_count = 0
+    marked_count = 0
+
+    monkeypatch.setattr(
+        strategy_runner_module,
+        "run_core_step",
+        lambda *args, **kwargs: CoreStepResult(
+            dispatchable_intents=(dispatchable_new,),
+        ),
+    )
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("market core-step mode must not call runtime risk gate")
+        ),
+    )
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        nonlocal submitted_event_count
+        _ = (state, configuration)
+        if isinstance(entry.event, OrderSubmittedEvent):
+            submitted_event_count += 1
+
+    def _spy_mark_intent_sent(instrument: str, client_order_id: str, intent_type: str) -> None:
+        nonlocal marked_count
+        _ = (instrument, client_order_id, intent_type)
+        marked_count += 1
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(runner.strategy_state, "mark_intent_sent", _spy_mark_intent_sent)
+
+    class _ExecutionFailNew:
+        def apply_intents(self, intents: list[Any]) -> list[tuple[Any, str]]:
+            _ = intents
+            return [(dispatchable_new, "EXCHANGE_REJECT")]
+
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 1],
+        ts_sequence=[10, 20, 30],
+        depth=_depth_snapshot(),
+    )
+    runner.run(
+        venue=venue,
+        execution=_ExecutionFailNew(),
+        recorder=_RecorderWrapper(),
+    )
+
+    assert submitted_event_count == 0
+    assert marked_count == 0
+
+
+def test_market_core_step_mode_replace_cancel_emit_no_order_submitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    replace_intent = _replace_intent()
+    cancel_intent = _cancel_intent()
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_market_dispatch=True,
+    )
+    submitted_event_count = 0
+    marks: list[tuple[str, str, str]] = []
+
+    monkeypatch.setattr(
+        strategy_runner_module,
+        "run_core_step",
+        lambda *args, **kwargs: CoreStepResult(
+            dispatchable_intents=(replace_intent, cancel_intent),
+        ),
+    )
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("market core-step mode must not call runtime risk gate")
+        ),
+    )
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        nonlocal submitted_event_count
+        _ = (state, configuration)
+        if isinstance(entry.event, OrderSubmittedEvent):
+            submitted_event_count += 1
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(
+        runner.strategy_state,
+        "mark_intent_sent",
+        lambda i, c, t: marks.append((i, c, t)),
+    )
+
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 1],
+        ts_sequence=[100, 200, 300],
+        depth=_depth_snapshot(),
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert submitted_event_count == 0
+    assert marks == [
+        (
+            replace_intent.instrument,
+            replace_intent.client_order_id,
+            "replace",
+        ),
+        (
+            cancel_intent.instrument,
+            cancel_intent.client_order_id,
+            "cancel",
+        ),
+    ]
+
+
+def test_market_core_step_mode_failure_does_not_commit_or_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_market_dispatch=True,
+    )
+
+    monkeypatch.setattr(
+        strategy_runner_module,
+        "run_core_step",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("boom-market-core-step")
+        ),
+    )
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("risk gate must not run after market core-step failure")
+        ),
+    )
+
+    class _ExecutionMustNotRun:
+        def apply_intents(self, intents: list[Any]) -> list[tuple[Any, str]]:
+            _ = intents
+            raise AssertionError("dispatch must not run after market core-step failure")
+
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 1],
+        ts_sequence=[1, 2, 3],
+        depth=_depth_snapshot(),
+    )
+    with pytest.raises(RuntimeError, match="boom-market-core-step"):
+        runner.run(venue=venue, execution=_ExecutionMustNotRun(), recorder=_RecorderWrapper())
+
+    assert runner._event_stream_cursor.next_index == 0
+
+
+def test_order_update_path_remains_legacy_when_market_core_step_mode_enabled() -> None:
+    order_update_intent = _new_intent(ts_ns_local=2)
+    risk_calls: list[list[object]] = []
+
+    class _OrderUpdateStrategy(Strategy):
+        def on_feed(self, state: Any, event: Any, engine_cfg: Any, constraints: Any) -> list[Any]:
+            _ = (state, event, engine_cfg, constraints)
+            return []
+
+        def on_order_update(self, state: Any, engine_cfg: Any, constraints: Any) -> list[Any]:
+            _ = (state, engine_cfg, constraints)
+            return [order_update_intent]
+
+        def on_risk_decision(self, decision: Any) -> None:
+            _ = decision
+
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_OrderUpdateStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_market_dispatch=True,
+    )
+
+    def _spy_decide_intents(**kwargs: object) -> GateDecision:
+        risk_calls.append(list(kwargs["raw_intents"]))
+        return _decision_for([])
+
+    runner.risk.decide_intents = _spy_decide_intents  # type: ignore[method-assign]
+
+    venue = _StubVenue(
+        rc_sequence=[0, 3, 1],
+        ts_sequence=[1, 2, 3],
+        state_values=SimpleNamespace(
+            position=0.0,
+            balance=1000.0,
+            fee=0.0,
+            trading_volume=0.0,
+            trading_value=0.0,
+            num_trades=0,
+        ),
+        orders={},
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert len(risk_calls) == 1
+    assert risk_calls[0] == [order_update_intent]
 
 
 def test_market_run_core_step_failure_does_not_commit_or_reach_risk_dispatch(
@@ -1085,13 +1602,17 @@ def test_global_canonical_counter_shared_between_market_and_order_submitted(
         state: object,
         entry: object,
         *,
-        configuration: object,
+        configuration: object | None = None,
         control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
         core_decision_context: object | None = None,
         strategy_evaluator: object | None = None,
     ) -> CoreStepResult:
         _ = (state, configuration, core_decision_context, strategy_evaluator)
         assert control_time_queue_context is None
+        assert policy_admission_context is None
+        assert execution_control_apply_context is None
         positions.append((entry.position.index, type(entry.event).__name__))
         return CoreStepResult(generated_intents=(new_intent,))
 
@@ -1167,13 +1688,17 @@ def test_control_time_event_injected_when_scheduled_deadline_is_realized(
         state: object,
         entry: object,
         *,
-        configuration: object,
+        configuration: object | None = None,
         control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
         core_decision_context: object | None = None,
         strategy_evaluator: object | None = None,
     ) -> CoreStepResult:
         _ = (state, configuration)
         _ = core_decision_context
+        assert policy_admission_context is None
+        assert execution_control_apply_context is None
         if isinstance(entry.event, MarketEvent):
             assert control_time_queue_context is None
             assert strategy_evaluator is not None
@@ -1218,10 +1743,14 @@ def test_control_time_realization_routes_through_run_core_step_with_expected_arg
         state: object,
         entry: object,
         *,
-        configuration: object,
+        configuration: object | None = None,
         control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
     ) -> CoreStepResult:
         captured_calls.append((state, entry, configuration, control_time_queue_context))
+        assert policy_admission_context is None
+        assert execution_control_apply_context is None
         return CoreStepResult()
 
     monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
@@ -1275,13 +1804,17 @@ def test_control_time_event_uses_structured_obligation_fields_when_available(
         state: object,
         entry: object,
         *,
-        configuration: object,
+        configuration: object | None = None,
         control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
         core_decision_context: object | None = None,
         strategy_evaluator: object | None = None,
     ) -> CoreStepResult:
         _ = (state, configuration)
         _ = core_decision_context
+        assert policy_admission_context is None
+        assert execution_control_apply_context is None
         if isinstance(entry.event, MarketEvent):
             assert control_time_queue_context is None
             assert strategy_evaluator is not None
@@ -1326,10 +1859,14 @@ def test_control_time_event_falls_back_when_structured_obligation_missing(
         state: object,
         entry: object,
         *,
-        configuration: object,
+        configuration: object | None = None,
         control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
     ) -> CoreStepResult:
         _ = (state, configuration)
+        assert policy_admission_context is None
+        assert execution_control_apply_context is None
         assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
         if isinstance(entry.event, ControlTimeEvent):
             control_events.append(entry.event)
@@ -1420,11 +1957,15 @@ def test_control_time_deadline_injection_is_not_periodic_for_same_deadline(
         state: object,
         entry: object,
         *,
-        configuration: object,
+        configuration: object | None = None,
         control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
     ) -> CoreStepResult:
         nonlocal control_count
         _ = (state, configuration)
+        assert policy_admission_context is None
+        assert execution_control_apply_context is None
         assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
         if isinstance(entry.event, ControlTimeEvent):
             control_count += 1
@@ -1455,10 +1996,14 @@ def test_control_time_event_processed_through_core_step_context_without_runtime_
         state: object,
         entry: object,
         *,
-        configuration: object,
+        configuration: object | None = None,
         control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
     ) -> CoreStepResult:
         _ = (state, configuration)
+        assert policy_admission_context is None
+        assert execution_control_apply_context is None
         assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
         if isinstance(entry.event, ControlTimeEvent):
             assert entry.position.index == 0
@@ -1506,10 +2051,14 @@ def test_control_time_processing_failure_does_not_mark_deadline_or_dispatch(
         state: object,
         entry: object,
         *,
-        configuration: object,
+        configuration: object | None = None,
         control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
     ) -> CoreStepResult:
         _ = (state, configuration)
+        assert policy_admission_context is None
+        assert execution_control_apply_context is None
         assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
         if isinstance(entry.event, ControlTimeEvent):
             raise RuntimeError("boom")
@@ -1565,13 +2114,17 @@ def test_market_and_order_submitted_paths_remain_on_process_event_entry_path(
         state: object,
         entry: object,
         *,
-        configuration: object,
+        configuration: object | None = None,
         control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
         core_decision_context: object | None = None,
         strategy_evaluator: object | None = None,
     ) -> CoreStepResult:
         _ = (state, configuration, core_decision_context, strategy_evaluator)
         assert control_time_queue_context is None
+        assert policy_admission_context is None
+        assert execution_control_apply_context is None
         run_core_step_names.append(type(entry.event).__name__)
         return CoreStepResult(generated_intents=(new_intent,))
 
@@ -1606,10 +2159,14 @@ def test_control_time_success_consumes_pending_obligation_after_core_step(
         state: object,
         entry: object,
         *,
-        configuration: object,
+        configuration: object | None = None,
         control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
     ) -> CoreStepResult:
         _ = (state, configuration)
+        assert policy_admission_context is None
+        assert execution_control_apply_context is None
         assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
         return CoreStepResult()
 
@@ -1648,11 +2205,15 @@ def test_realized_old_deadline_does_not_runtime_pop_without_new_canonical_inject
         state: object,
         entry: object,
         *,
-        configuration: object,
+        configuration: object | None = None,
         control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
     ) -> CoreStepResult:
         nonlocal control_count
         _ = (state, configuration)
+        assert policy_admission_context is None
+        assert execution_control_apply_context is None
         assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
         if isinstance(entry.event, ControlTimeEvent):
             control_count += 1
@@ -1705,13 +2266,17 @@ def test_global_canonical_counter_shared_with_control_time_market_and_submitted(
         state: object,
         entry: object,
         *,
-        configuration: object,
+        configuration: object | None = None,
         control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
         core_decision_context: object | None = None,
         strategy_evaluator: object | None = None,
     ) -> CoreStepResult:
         _ = (state, configuration)
         _ = (core_decision_context, strategy_evaluator)
+        assert policy_admission_context is None
+        assert execution_control_apply_context is None
         positions.append((entry.position.index, type(entry.event).__name__))
         if isinstance(entry.event, MarketEvent):
             assert control_time_queue_context is None
@@ -1763,10 +2328,14 @@ def test_control_time_core_step_result_dispatches_via_existing_execution_path(
         state: object,
         entry: object,
         *,
-        configuration: object,
+        configuration: object | None = None,
         control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
     ) -> CoreStepResult:
         _ = (state, configuration)
+        assert policy_admission_context is None
+        assert execution_control_apply_context is None
         assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
         return CoreStepResult(
             dispatchable_intents=(control_intent,),
@@ -1843,13 +2412,17 @@ def test_same_wakeup_strategy_and_control_time_intents_are_processed_in_two_deci
         state: object,
         entry: object,
         *,
-        configuration: object,
+        configuration: object | None = None,
         control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
         core_decision_context: object | None = None,
         strategy_evaluator: object | None = None,
     ) -> CoreStepResult:
         _ = (state, entry, configuration)
         _ = (core_decision_context, strategy_evaluator)
+        assert policy_admission_context is None
+        assert execution_control_apply_context is None
         if isinstance(entry.event, MarketEvent):
             assert control_time_queue_context is None
             return CoreStepResult(generated_intents=(strategy_intent,))

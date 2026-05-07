@@ -7,7 +7,12 @@ from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from tradingchassis_core import ControlTimeQueueReevaluationContext, run_core_step
+from tradingchassis_core import (
+    ControlTimeQueueReevaluationContext,
+    CoreExecutionControlApplyContext,
+    CorePolicyAdmissionContext,
+    run_core_step,
+)
 from tradingchassis_core.core.domain.configuration import CoreConfiguration
 from tradingchassis_core.core.domain.processing import process_event_entry
 from tradingchassis_core.core.domain.processing_order import (
@@ -93,10 +98,12 @@ class HftStrategyRunner:
         strategy: Strategy,
         risk_cfg: RiskConfig,
         core_cfg: CoreConfiguration,
+        enable_core_step_market_dispatch: bool = False,
     ) -> None:
         self.engine_cfg = engine_cfg
         self.strategy = strategy
         self._core_cfg = core_cfg
+        self._enable_core_step_market_dispatch = enable_core_step_market_dispatch
 
         event_bus = self._build_event_bus(
             path=Path(engine_cfg.event_bus_path),
@@ -179,15 +186,45 @@ class HftStrategyRunner:
             position=position,
             event=market_event,
         )
-        result = run_core_step(
-            self.strategy_state,
-            entry,
-            configuration=self._core_cfg,
-            strategy_evaluator=_LegacyOnFeedStrategyEvaluator(
+        policy_admission_context = None
+        execution_control_apply_context = None
+        if getattr(self, "_enable_core_step_market_dispatch", False):
+            rate_cfg = self.risk.risk_cfg.order_rate_limits
+            max_orders_per_sec = (
+                None if rate_cfg is None else rate_cfg.max_orders_per_second
+            )
+            max_cancels_per_sec = (
+                None if rate_cfg is None else rate_cfg.max_cancels_per_second
+            )
+            policy_admission_context = CorePolicyAdmissionContext(
+                policy_evaluator=self.risk,
+                now_ts_ns_local=market_event.ts_ns_local,
+            )
+            execution_control_apply_context = CoreExecutionControlApplyContext(
+                execution_control=self.risk.execution_control,
+                now_ts_ns_local=market_event.ts_ns_local,
+                max_orders_per_sec=max_orders_per_sec,
+                max_cancels_per_sec=max_cancels_per_sec,
+                activate_dispatchable_outputs=True,
+            )
+        run_core_step_kwargs: dict[str, object] = {
+            "configuration": self._core_cfg,
+            "strategy_evaluator": _LegacyOnFeedStrategyEvaluator(
                 strategy=self.strategy,
                 engine_cfg=self.engine_cfg,
                 constraints=constraints,
             ),
+        }
+        if policy_admission_context is not None:
+            run_core_step_kwargs["policy_admission_context"] = policy_admission_context
+        if execution_control_apply_context is not None:
+            run_core_step_kwargs["execution_control_apply_context"] = (
+                execution_control_apply_context
+            )
+        result = run_core_step(
+            self.strategy_state,
+            entry,
+            **run_core_step_kwargs,
         )
         self._event_stream_cursor.commit_success(position)
         return result
@@ -403,6 +440,7 @@ class HftStrategyRunner:
             sim_now_ns = self.strategy_state.sim_ts_ns_local
 
             raw_intents: list[OrderIntent] = []
+            market_step_result: CoreStepResult | None = None
             control_step_result: CoreStepResult | None = None
 
             # -----------------------------------------------------------------
@@ -485,7 +523,8 @@ class HftStrategyRunner:
                     market_event,
                     constraints=constraints,
                 )
-                raw_intents.extend(market_step_result.generated_intents)
+                if not getattr(self, "_enable_core_step_market_dispatch", False):
+                    raw_intents.extend(market_step_result.generated_intents)
 
             # -----------------------------------------------------------------
             # Order / account update
@@ -565,6 +604,22 @@ class HftStrategyRunner:
                 elif control_step_result.control_scheduling_obligation is not None:
                     self._apply_control_scheduling_obligation(
                         control_step_result.control_scheduling_obligation
+                    )
+
+            if (
+                market_step_result is not None
+                and getattr(self, "_enable_core_step_market_dispatch", False)
+            ):
+                self._dispatch_accepted_intents(
+                    list(market_step_result.dispatchable_intents),
+                    execution,
+                    sim_now_ns=sim_now_ns,
+                )
+                if market_step_result.control_scheduling_obligation is None:
+                    self._clear_pending_control_scheduling_obligation()
+                else:
+                    self._apply_control_scheduling_obligation(
+                        market_step_result.control_scheduling_obligation
                     )
 
             # -----------------------------------------------------------------
