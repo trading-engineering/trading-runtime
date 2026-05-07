@@ -920,6 +920,13 @@ def test_market_core_step_mode_preserves_order_submitted_before_mark_sent(
 
     monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
     monkeypatch.setattr(runner.strategy_state, "mark_intent_sent", _spy_mark_intent_sent)
+    monkeypatch.setattr(
+        runner.strategy,
+        "on_risk_decision",
+        lambda _decision: (_ for _ in ()).throw(
+            AssertionError("market core-step mode must not synthesize GateDecision callbacks")
+        ),
+    )
 
     venue = _StubVenue(
         rc_sequence=[0, 2, 1],
@@ -933,6 +940,7 @@ def test_market_core_step_mode_preserves_order_submitted_before_mark_sent(
     assert marks == [
         (dispatchable_new.instrument, dispatchable_new.client_order_id, "new")
     ]
+    assert runner._last_core_step_execution_errors == []
 
 
 def test_market_core_step_mode_failed_new_dispatch_emits_no_order_submitted(
@@ -977,6 +985,13 @@ def test_market_core_step_mode_failed_new_dispatch_emits_no_order_submitted(
 
     monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
     monkeypatch.setattr(runner.strategy_state, "mark_intent_sent", _spy_mark_intent_sent)
+    monkeypatch.setattr(
+        runner.strategy,
+        "on_risk_decision",
+        lambda _decision: (_ for _ in ()).throw(
+            AssertionError("market core-step mode must not synthesize GateDecision callbacks")
+        ),
+    )
 
     class _ExecutionFailNew:
         def apply_intents(self, intents: list[Any]) -> list[tuple[Any, str]]:
@@ -996,6 +1011,10 @@ def test_market_core_step_mode_failed_new_dispatch_emits_no_order_submitted(
 
     assert submitted_event_count == 0
     assert marked_count == 0
+    assert len(runner._last_core_step_execution_errors) == 1
+    failed_intent, failure_reason = runner._last_core_step_execution_errors[0]
+    assert failed_intent.client_order_id == dispatchable_new.client_order_id
+    assert failure_reason == "EXCHANGE_REJECT"
 
 
 def test_market_core_step_mode_replace_cancel_emit_no_order_submitted(
@@ -1061,6 +1080,7 @@ def test_market_core_step_mode_replace_cancel_emit_no_order_submitted(
             "cancel",
         ),
     ]
+    assert runner._last_core_step_execution_errors == []
 
 
 def test_market_core_step_mode_failure_does_not_commit_or_dispatch(

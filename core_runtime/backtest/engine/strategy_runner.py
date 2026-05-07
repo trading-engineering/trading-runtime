@@ -122,6 +122,7 @@ class HftStrategyRunner:
         self._event_stream_cursor = EventStreamCursor()
         self._last_injected_control_deadline_ns: int | None = None
         self._pending_control_scheduling_obligation: ControlSchedulingObligation | None = None
+        self._last_core_step_execution_errors: list[tuple[OrderIntent, str]] = []
 
     def _process_canonical_event(self, event: object) -> None:
         position = self._event_stream_cursor.attempt_position()
@@ -610,7 +611,7 @@ class HftStrategyRunner:
                 market_step_result is not None
                 and getattr(self, "_enable_core_step_market_dispatch", False)
             ):
-                self._dispatch_accepted_intents(
+                self._last_core_step_execution_errors = self._dispatch_accepted_intents(
                     list(market_step_result.dispatchable_intents),
                     execution,
                     sim_now_ns=sim_now_ns,
