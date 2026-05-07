@@ -24,7 +24,7 @@ spec:
 
       - name: experiment_config
         description: "Path to experiment JSON inside the container"
-        value: /usr/local/lib/python3.11/site-packages/core_runtime/argo/argo.json
+        value: /usr/local/lib/python3.11/site-packages/core_runtime/argo/bt_config_argo.json
 
       - name: scratch_root
         description: "Scratch root inside the container"

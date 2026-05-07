@@ -48,7 +48,7 @@ Order, State, or Risk Engine.
 Current local smoke is usable from the `core-runtime` repository root:
 
 ```bash
-python -m core_runtime.local.backtest --config core_runtime/local/local.json
+python -m core_runtime.local.backtest --config core_runtime/local/bt_config_local.json
 ```
 
 Default output location:
@@ -67,7 +67,7 @@ From the `core-runtime` repository root:
 
 ```bash
 python -m pip install -e .
-python -m core_runtime.local.backtest --config core_runtime/local/local.json
+python -m core_runtime.local.backtest --config core_runtime/local/bt_config_local.json
 ```
 
 If `tradingchassis_core` is not already resolvable in your environment, install `core` as a
@@ -83,8 +83,8 @@ python -m pip install -e ../core
 
 | Mode | Entrypoint | Command shape | Notes |
 | --- | --- | --- | --- |
-| Local backtest | `core_runtime/local/backtest.py` | `python -m core_runtime.local.backtest --config core_runtime/local/local.json` | Main local runner. |
-| Argo plan/run orchestration | `core_runtime/backtest/runtime/entrypoint.py` | `python -m core_runtime.backtest.runtime.entrypoint --config core_runtime/argo/argo.json --plan` | Planner and sweep-context emitter for Argo flow. |
+| Local backtest | `core_runtime/local/backtest.py` | `python -m core_runtime.local.backtest --config core_runtime/local/bt_config_local.json` | Main local runner. |
+| Argo plan/run orchestration | `core_runtime/backtest/runtime/entrypoint.py` | `python -m core_runtime.backtest.runtime.entrypoint --config core_runtime/argo/bt_config_argo.json --plan` | Planner and sweep-context emitter for Argo flow. |
 | Sweep worker | `core_runtime/backtest/runtime/run_sweep.py` | `python -m core_runtime.backtest.runtime.run_sweep --context <path-to-sweep-json>` | Executes one sweep context. |
 
 ---
@@ -160,7 +160,7 @@ tests/                      Runtime tests and deterministic fixtures
 
 Primary local config:
 
-- `core_runtime/local/local.json`
+- `core_runtime/local/bt_config_local.json`
 - OCI config template (for local object storage auth setups): `core_runtime/local/oci.config.example`
 
 Note: local JSON configs use cwd-relative paths for `tests/data/...` inputs and `.runtime/...`

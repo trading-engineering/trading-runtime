@@ -47,7 +47,7 @@ from tradingchassis_core.core.risk.risk_engine import (
 
 from core_runtime.backtest.adapters.protocols import OrderSubmissionGateway
 from core_runtime.backtest.engine.event_stream_cursor import EventStreamCursor
-from core_runtime.core.events.sinks.file_recorder import FileRecorderSink
+from core_runtime.backtest.events.sinks.file_recorder import FileRecorderSink
 
 if TYPE_CHECKING:
     from tradingchassis_core.strategies.base import Strategy

@@ -54,7 +54,7 @@ def _install_oci_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_local_loader_fails_early_when_core_missing(tmp_path: Path) -> None:
-    sample_path = _repo_root() / "core_runtime/local/local.json"
+    sample_path = _repo_root() / "core_runtime/local/bt_config_local.json"
     config = _load_sample_config(sample_path)
     config.pop("core", None)
 
@@ -66,7 +66,7 @@ def test_local_loader_fails_early_when_core_missing(tmp_path: Path) -> None:
 
 
 def test_local_loader_succeeds_with_valid_core() -> None:
-    sample_path = _repo_root() / "core_runtime/local/local.json"
+    sample_path = _repo_root() / "core_runtime/local/bt_config_local.json"
     cfg = load_config(str(sample_path))
 
     assert isinstance(cfg.core_cfg, CoreConfiguration)
@@ -81,7 +81,7 @@ def test_argo_entrypoint_rejects_invalid_run_config_before_planning(
 
     from core_runtime.backtest.runtime.entrypoint import main as argo_entrypoint_main
 
-    sample_path = _repo_root() / "core_runtime/argo/argo.json"
+    sample_path = _repo_root() / "core_runtime/argo/bt_config_argo.json"
     config = _load_sample_config(sample_path)
     config.pop("core", None)
 
