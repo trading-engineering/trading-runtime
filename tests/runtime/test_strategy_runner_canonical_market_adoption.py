@@ -2482,6 +2482,284 @@ def test_same_wakeup_strategy_and_control_time_intents_are_processed_in_two_deci
     assert callback_order == ["control", "strategy"]
 
 
+def test_control_time_core_step_mode_calls_run_core_step_with_policy_and_apply_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg_with_rate_limits(
+            max_orders_per_second=5.0,
+            max_cancels_per_second=2.0,
+        ),
+        core_cfg=_core_cfg(),
+        enable_core_step_control_time_dispatch=True,
+    )
+    runner._next_send_ts_ns_local = 5
+    captured: list[tuple[object, object, object, object]] = []
+
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object | None = None,
+        control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
+        core_decision_context: object | None = None,
+        strategy_evaluator: object | None = None,
+    ) -> CoreStepResult:
+        _ = core_decision_context
+        assert control_time_queue_context is None
+        assert strategy_evaluator is None
+        captured.append(
+            (
+                state,
+                configuration,
+                policy_admission_context,
+                execution_control_apply_context,
+            )
+        )
+        return CoreStepResult()
+
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("control-time core-step mode must not call runtime risk gate")
+        ),
+    )
+    venue = _StubVenue(
+        rc_sequence=[0, 0, 1],
+        ts_sequence=[1, 10, 11],
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert len(captured) == 1
+    state, configuration, policy_ctx, apply_ctx = captured[0]
+    assert state is runner.strategy_state
+    assert configuration is runner._core_cfg
+    assert isinstance(policy_ctx, CorePolicyAdmissionContext)
+    assert policy_ctx.policy_evaluator is runner.risk
+    assert policy_ctx.now_ts_ns_local == 10
+    assert isinstance(apply_ctx, CoreExecutionControlApplyContext)
+    assert apply_ctx.execution_control is runner.risk.execution_control
+    assert apply_ctx.now_ts_ns_local == 10
+    assert apply_ctx.max_orders_per_sec == 5.0
+    assert apply_ctx.max_cancels_per_sec == 2.0
+    assert apply_ctx.activate_dispatchable_outputs is True
+
+
+def test_control_time_core_step_mode_dispatches_from_dispatchables_and_ignores_compat_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatchable = _new_intent(ts_ns_local=10)
+    obligation = _obligation(due_ts_ns_local=25, obligation_key="control-core-step")
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_control_time_dispatch=True,
+    )
+    runner._next_send_ts_ns_local = 5
+    callbacks: list[GateDecision] = []
+
+    class _ExecutionCapture:
+        def __init__(self) -> None:
+            self.batches: list[list[str]] = []
+
+        def apply_intents(self, intents: list[Any]) -> list[tuple[Any, str]]:
+            self.batches.append([it.client_order_id for it in intents])
+            return []
+
+    execution = _ExecutionCapture()
+    compat_decision = _decision_for([])
+
+    monkeypatch.setattr(
+        strategy_runner_module,
+        "run_core_step",
+        lambda *args, **kwargs: CoreStepResult(
+            dispatchable_intents=(dispatchable,),
+            control_scheduling_obligation=obligation,
+            compat_gate_decision=compat_decision,
+        ),
+    )
+    monkeypatch.setattr(runner.strategy, "on_risk_decision", lambda d: callbacks.append(d))
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("control-time core-step mode must not call runtime risk gate")
+        ),
+    )
+    venue = _StubVenue(
+        rc_sequence=[0, 0, 1],
+        ts_sequence=[1, 10, 11],
+    )
+    runner.run(venue=venue, execution=execution, recorder=_RecorderWrapper())
+
+    assert execution.batches == [[dispatchable.client_order_id]]
+    assert callbacks == []
+    assert runner._pending_control_scheduling_obligation == obligation
+    assert runner._next_send_ts_ns_local == obligation.due_ts_ns_local
+
+
+def test_control_time_core_step_mode_none_obligation_clears_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_control_time_dispatch=True,
+    )
+    seeded = _obligation(due_ts_ns_local=5, obligation_key="seeded")
+    runner._pending_control_scheduling_obligation = seeded
+    runner._next_send_ts_ns_local = seeded.due_ts_ns_local
+
+    monkeypatch.setattr(
+        strategy_runner_module,
+        "run_core_step",
+        lambda *args, **kwargs: CoreStepResult(
+            dispatchable_intents=(),
+            control_scheduling_obligation=None,
+        ),
+    )
+    venue = _StubVenue(
+        rc_sequence=[0, 0, 1],
+        ts_sequence=[1, 10, 11],
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert runner._pending_control_scheduling_obligation is None
+    assert runner._next_send_ts_ns_local is None
+
+
+def test_control_time_core_step_mode_failure_preserves_pending_cursor_and_deadline_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_control_time_dispatch=True,
+    )
+    obligation = _obligation(due_ts_ns_local=5, obligation_key="k-failure-core-step")
+    runner._pending_control_scheduling_obligation = obligation
+    runner._next_send_ts_ns_local = obligation.due_ts_ns_local
+
+    monkeypatch.setattr(
+        strategy_runner_module,
+        "run_core_step",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("boom-control-time-core-step")
+        ),
+    )
+    venue = _StubVenue(
+        rc_sequence=[0, 0, 1],
+        ts_sequence=[1, 10, 11],
+    )
+    with pytest.raises(RuntimeError, match="boom-control-time-core-step"):
+        runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert runner._last_injected_control_deadline_ns is None
+    assert runner._pending_control_scheduling_obligation == obligation
+    assert runner._next_send_ts_ns_local == obligation.due_ts_ns_local
+    assert runner._event_stream_cursor.next_index == 0
+
+
+def test_control_time_core_step_mode_same_deadline_injected_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_control_time_dispatch=True,
+    )
+    runner._next_send_ts_ns_local = 5
+    calls = {"count": 0}
+
+    def _spy_run_core_step(*args: object, **kwargs: object) -> CoreStepResult:
+        _ = (args, kwargs)
+        calls["count"] += 1
+        return CoreStepResult()
+
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
+    venue = _StubVenue(
+        rc_sequence=[0, 0, 0, 1],
+        ts_sequence=[1, 10, 10, 11],
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert calls["count"] == 1
+
+
+def test_control_time_core_step_mode_failed_dispatch_records_execution_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatchable_new = _new_intent(ts_ns_local=10)
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_control_time_dispatch=True,
+    )
+    runner._next_send_ts_ns_local = 5
+    submitted_event_count = 0
+    marked_count = 0
+
+    monkeypatch.setattr(
+        strategy_runner_module,
+        "run_core_step",
+        lambda *args, **kwargs: CoreStepResult(
+            dispatchable_intents=(dispatchable_new,),
+        ),
+    )
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        nonlocal submitted_event_count
+        _ = (state, configuration)
+        if isinstance(entry.event, OrderSubmittedEvent):
+            submitted_event_count += 1
+
+    def _spy_mark_intent_sent(instrument: str, client_order_id: str, intent_type: str) -> None:
+        nonlocal marked_count
+        _ = (instrument, client_order_id, intent_type)
+        marked_count += 1
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(runner.strategy_state, "mark_intent_sent", _spy_mark_intent_sent)
+
+    class _ExecutionFailNew:
+        def apply_intents(self, intents: list[Any]) -> list[tuple[Any, str]]:
+            _ = intents
+            return [(dispatchable_new, "EXCHANGE_REJECT")]
+
+    venue = _StubVenue(
+        rc_sequence=[0, 0, 1],
+        ts_sequence=[1, 10, 11],
+    )
+    runner.run(
+        venue=venue,
+        execution=_ExecutionFailNew(),
+        recorder=_RecorderWrapper(),
+    )
+
+    assert submitted_event_count == 0
+    assert marked_count == 0
+    assert len(runner._last_core_step_execution_errors) == 1
+    failed_intent, failure_reason = runner._last_core_step_execution_errors[0]
+    assert failed_intent.client_order_id == dispatchable_new.client_order_id
+    assert failure_reason == "EXCHANGE_REJECT"
+
+
 def test_fallback_second_boundary_wakeup_behavior_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

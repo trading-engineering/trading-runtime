@@ -99,11 +99,15 @@ class HftStrategyRunner:
         risk_cfg: RiskConfig,
         core_cfg: CoreConfiguration,
         enable_core_step_market_dispatch: bool = False,
+        enable_core_step_control_time_dispatch: bool = False,
     ) -> None:
         self.engine_cfg = engine_cfg
         self.strategy = strategy
         self._core_cfg = core_cfg
         self._enable_core_step_market_dispatch = enable_core_step_market_dispatch
+        self._enable_core_step_control_time_dispatch = (
+            enable_core_step_control_time_dispatch
+        )
 
         event_bus = self._build_event_bus(
             path=Path(engine_cfg.event_bus_path),
@@ -176,6 +180,32 @@ class HftStrategyRunner:
 
         return sorted(intents, key=lambda it: (intent_priority(it), it.ts_ns_local))
 
+    def _build_policy_and_apply_context(
+        self,
+        *,
+        now_ts_ns_local: int,
+    ) -> tuple[CorePolicyAdmissionContext, CoreExecutionControlApplyContext]:
+        rate_cfg = self.risk.risk_cfg.order_rate_limits
+        max_orders_per_sec = (
+            None if rate_cfg is None else rate_cfg.max_orders_per_second
+        )
+        max_cancels_per_sec = (
+            None if rate_cfg is None else rate_cfg.max_cancels_per_second
+        )
+        return (
+            CorePolicyAdmissionContext(
+                policy_evaluator=self.risk,
+                now_ts_ns_local=now_ts_ns_local,
+            ),
+            CoreExecutionControlApplyContext(
+                execution_control=self.risk.execution_control,
+                now_ts_ns_local=now_ts_ns_local,
+                max_orders_per_sec=max_orders_per_sec,
+                max_cancels_per_sec=max_cancels_per_sec,
+                activate_dispatchable_outputs=True,
+            ),
+        )
+
     def _process_canonical_market_event(
         self,
         market_event: MarketEvent,
@@ -190,23 +220,11 @@ class HftStrategyRunner:
         policy_admission_context = None
         execution_control_apply_context = None
         if getattr(self, "_enable_core_step_market_dispatch", False):
-            rate_cfg = self.risk.risk_cfg.order_rate_limits
-            max_orders_per_sec = (
-                None if rate_cfg is None else rate_cfg.max_orders_per_second
-            )
-            max_cancels_per_sec = (
-                None if rate_cfg is None else rate_cfg.max_cancels_per_second
-            )
-            policy_admission_context = CorePolicyAdmissionContext(
-                policy_evaluator=self.risk,
+            (
+                policy_admission_context,
+                execution_control_apply_context,
+            ) = self._build_policy_and_apply_context(
                 now_ts_ns_local=market_event.ts_ns_local,
-            )
-            execution_control_apply_context = CoreExecutionControlApplyContext(
-                execution_control=self.risk.execution_control,
-                now_ts_ns_local=market_event.ts_ns_local,
-                max_orders_per_sec=max_orders_per_sec,
-                max_cancels_per_sec=max_cancels_per_sec,
-                activate_dispatchable_outputs=True,
             )
         run_core_step_kwargs: dict[str, object] = {
             "configuration": self._core_cfg,
@@ -279,15 +297,34 @@ class HftStrategyRunner:
             position=position,
             event=control_time_event,
         )
+        run_core_step_kwargs: dict[str, object] = {
+            "configuration": self._core_cfg,
+        }
+        if getattr(self, "_enable_core_step_control_time_dispatch", False):
+            (
+                policy_admission_context,
+                execution_control_apply_context,
+            ) = self._build_policy_and_apply_context(
+                now_ts_ns_local=now_ts_ns_local,
+            )
+            run_core_step_kwargs["policy_admission_context"] = (
+                policy_admission_context
+            )
+            run_core_step_kwargs["execution_control_apply_context"] = (
+                execution_control_apply_context
+            )
+        else:
+            run_core_step_kwargs["control_time_queue_context"] = (
+                ControlTimeQueueReevaluationContext(
+                    risk_engine=self.risk,
+                    instrument=instrument,
+                    now_ts_ns_local=now_ts_ns_local,
+                )
+            )
         result = run_core_step(
             self.strategy_state,
             entry,
-            configuration=self._core_cfg,
-            control_time_queue_context=ControlTimeQueueReevaluationContext(
-                risk_engine=self.risk,
-                instrument=instrument,
-                now_ts_ns_local=now_ts_ns_local,
-            ),
+            **run_core_step_kwargs,
         )
         self._event_stream_cursor.commit_success(position)
         return result
@@ -589,23 +626,38 @@ class HftStrategyRunner:
                         self._next_send_ts_ns_local = None
 
             if control_step_result is not None:
-                if control_step_result.compat_gate_decision is not None:
-                    self._finalize_decision_effects(
-                        decision=control_step_result.compat_gate_decision,
-                        execution=execution,
-                        sim_now_ns=sim_now_ns,
-                        instrument=instrument,
+                if getattr(self, "_enable_core_step_control_time_dispatch", False):
+                    self._last_core_step_execution_errors = (
+                        self._dispatch_accepted_intents(
+                            list(control_step_result.dispatchable_intents),
+                            execution,
+                            sim_now_ns=sim_now_ns,
+                        )
                     )
-                elif control_step_result.dispatchable_intents:
-                    self._dispatch_accepted_intents(
-                        list(control_step_result.dispatchable_intents),
-                        execution,
-                        sim_now_ns=sim_now_ns,
-                    )
-                elif control_step_result.control_scheduling_obligation is not None:
-                    self._apply_control_scheduling_obligation(
-                        control_step_result.control_scheduling_obligation
-                    )
+                    if control_step_result.control_scheduling_obligation is None:
+                        self._clear_pending_control_scheduling_obligation()
+                    else:
+                        self._apply_control_scheduling_obligation(
+                            control_step_result.control_scheduling_obligation
+                        )
+                else:
+                    if control_step_result.compat_gate_decision is not None:
+                        self._finalize_decision_effects(
+                            decision=control_step_result.compat_gate_decision,
+                            execution=execution,
+                            sim_now_ns=sim_now_ns,
+                            instrument=instrument,
+                        )
+                    elif control_step_result.dispatchable_intents:
+                        self._dispatch_accepted_intents(
+                            list(control_step_result.dispatchable_intents),
+                            execution,
+                            sim_now_ns=sim_now_ns,
+                        )
+                    elif control_step_result.control_scheduling_obligation is not None:
+                        self._apply_control_scheduling_obligation(
+                            control_step_result.control_scheduling_obligation
+                        )
 
             if (
                 market_step_result is not None
