@@ -2482,6 +2482,232 @@ def test_same_wakeup_strategy_and_control_time_intents_are_processed_in_two_deci
     assert callback_order == ["control", "strategy"]
 
 
+@pytest.mark.parametrize(
+    ("market_flag", "control_flag", "expected_dispatch_batches", "expected_raw_risk_calls"),
+    [
+        (
+            False,
+            False,
+            [["cid-control-compat"], ["cid-strategy-gated"]],
+            [["cid-strategy-generated"]],
+        ),
+        (
+            True,
+            False,
+            [["cid-control-compat"], ["cid-market-core-step"]],
+            [],
+        ),
+        (
+            False,
+            True,
+            [["cid-control-core-step"], ["cid-strategy-gated"]],
+            [["cid-strategy-generated"]],
+        ),
+        (
+            True,
+            True,
+            [["cid-control-core-step"], ["cid-market-core-step"]],
+            [],
+        ),
+    ],
+    ids=(
+        "market_off_control_off",
+        "market_on_control_off",
+        "market_off_control_on",
+        "market_on_control_on",
+    ),
+)
+def test_mixed_wakeup_matrix_characterization_keeps_split_dispatch_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    market_flag: bool,
+    control_flag: bool,
+    expected_dispatch_batches: list[list[str]],
+    expected_raw_risk_calls: list[list[str]],
+) -> None:
+    strategy_generated = _new_intent(ts_ns_local=10).model_copy(
+        update={"client_order_id": "cid-strategy-generated"}
+    )
+    strategy_gated = _new_intent(ts_ns_local=10).model_copy(
+        update={"client_order_id": "cid-strategy-gated"}
+    )
+    market_dispatchable = _new_intent(ts_ns_local=10).model_copy(
+        update={"client_order_id": "cid-market-core-step"}
+    )
+    control_compat = _new_intent(ts_ns_local=10).model_copy(
+        update={"client_order_id": "cid-control-compat"}
+    )
+    control_dispatchable = _new_intent(ts_ns_local=10).model_copy(
+        update={"client_order_id": "cid-control-core-step"}
+    )
+    control_obligation = _obligation(due_ts_ns_local=25, obligation_key="control")
+
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_EmitIntentsStrategy([strategy_generated]),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_market_dispatch=market_flag,
+        enable_core_step_control_time_dispatch=control_flag,
+    )
+    runner._next_send_ts_ns_local = 5
+    seeded_core_step_errors = [(_new_intent(), "stale")]
+    runner._last_core_step_execution_errors = list(seeded_core_step_errors)
+
+    control_compat_decision = _decision_for(
+        [control_compat],
+        control_scheduling_obligations=(control_obligation,),
+    )
+    strategy_decision = _decision_for([strategy_gated])
+
+    run_core_step_calls: list[dict[str, object]] = []
+    callback_decisions: list[GateDecision] = []
+    raw_risk_calls: list[list[str]] = []
+    ordering: list[str] = []
+    submitted_positions: list[tuple[int, str]] = []
+
+    class _ExecutionCapture:
+        def __init__(self) -> None:
+            self.batches: list[list[str]] = []
+
+        def apply_intents(self, intents: list[Any]) -> list[tuple[Any, str]]:
+            self.batches.append([it.client_order_id for it in intents])
+            return []
+
+    execution = _ExecutionCapture()
+
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object | None = None,
+        control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
+        core_decision_context: object | None = None,
+        strategy_evaluator: object | None = None,
+    ) -> CoreStepResult:
+        _ = state
+        _ = core_decision_context
+        assert configuration is runner._core_cfg
+        run_core_step_calls.append(
+            {
+                "event": type(entry.event).__name__,
+                "position": entry.position.index,
+                "strategy_evaluator": strategy_evaluator,
+                "control_time_queue_context": control_time_queue_context,
+                "policy_admission_context": policy_admission_context,
+                "execution_control_apply_context": execution_control_apply_context,
+            }
+        )
+        if isinstance(entry.event, MarketEvent):
+            assert strategy_evaluator is not None
+            if market_flag:
+                assert isinstance(policy_admission_context, CorePolicyAdmissionContext)
+                assert isinstance(
+                    execution_control_apply_context,
+                    CoreExecutionControlApplyContext,
+                )
+            else:
+                assert policy_admission_context is None
+                assert execution_control_apply_context is None
+            assert control_time_queue_context is None
+            return CoreStepResult(
+                generated_intents=(strategy_generated,),
+                dispatchable_intents=(
+                    (market_dispatchable,) if market_flag else ()
+                ),
+            )
+        assert isinstance(entry.event, ControlTimeEvent)
+        assert strategy_evaluator is None
+        if control_flag:
+            assert control_time_queue_context is None
+            assert isinstance(policy_admission_context, CorePolicyAdmissionContext)
+            assert isinstance(
+                execution_control_apply_context,
+                CoreExecutionControlApplyContext,
+            )
+            return CoreStepResult(
+                dispatchable_intents=(control_dispatchable,),
+                compat_gate_decision=control_compat_decision,
+                control_scheduling_obligation=control_obligation,
+            )
+        assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
+        assert policy_admission_context is None
+        assert execution_control_apply_context is None
+        return CoreStepResult(
+            dispatchable_intents=(control_dispatchable,),
+            compat_gate_decision=control_compat_decision,
+            control_scheduling_obligation=control_obligation,
+        )
+
+    def _spy_decide_intents(**kwargs: object) -> GateDecision:
+        raw_intents = kwargs["raw_intents"]
+        raw_risk_calls.append([intent.client_order_id for intent in raw_intents])
+        return strategy_decision
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        _ = (state, configuration)
+        if isinstance(entry.event, OrderSubmittedEvent):
+            ordering.append(f"submitted:{entry.event.client_order_id}")
+            submitted_positions.append((entry.position.index, entry.event.client_order_id))
+
+    def _spy_mark_intent_sent(instrument: str, client_order_id: str, intent_type: str) -> None:
+        _ = (instrument, intent_type)
+        ordering.append(f"mark:{client_order_id}")
+
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
+    monkeypatch.setattr(runner.risk, "decide_intents", _spy_decide_intents)
+    monkeypatch.setattr(runner.strategy, "on_risk_decision", lambda decision: callback_decisions.append(decision))
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(runner.strategy_state, "mark_intent_sent", _spy_mark_intent_sent)
+
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 0, 1],
+        ts_sequence=[1, 10, 10, 11],
+        depth=_depth_snapshot(),
+    )
+    runner.run(venue=venue, execution=execution, recorder=_RecorderWrapper())
+
+    assert [call["event"] for call in run_core_step_calls] == ["MarketEvent", "ControlTimeEvent"]
+    assert [call["position"] for call in run_core_step_calls] == [0, 1]
+    assert runner._last_injected_control_deadline_ns == 5
+    assert runner._event_stream_cursor.next_index == 4
+
+    # Dispatch remains split across market/control wakeups in all four flag combinations.
+    assert execution.batches == expected_dispatch_batches
+    assert raw_risk_calls == expected_raw_risk_calls
+
+    if control_flag:
+        assert control_compat_decision not in callback_decisions
+    else:
+        assert control_compat_decision in callback_decisions
+    if market_flag:
+        assert strategy_decision not in callback_decisions
+    else:
+        assert strategy_decision in callback_decisions
+
+    submitted_ids = [client_order_id for _, client_order_id in submitted_positions]
+    expected_submitted_ids = [batch[0] for batch in expected_dispatch_batches]
+    assert submitted_ids == expected_submitted_ids
+    assert [position for position, _ in submitted_positions] == [2, 3]
+    assert ordering == [
+        f"submitted:{expected_submitted_ids[0]}",
+        f"mark:{expected_submitted_ids[0]}",
+        f"submitted:{expected_submitted_ids[1]}",
+        f"mark:{expected_submitted_ids[1]}",
+    ]
+
+    # _last_core_step_execution_errors is runtime-owned observability for the latest
+    # CoreStep dispatch batch only. Legacy/compat paths must not mutate this field.
+    if market_flag or control_flag:
+        assert runner._last_core_step_execution_errors == []
+    else:
+        assert runner._last_core_step_execution_errors == seeded_core_step_errors
+
+    assert runner._pending_control_scheduling_obligation is None
+    assert runner._next_send_ts_ns_local is None
+
+
 def test_control_time_core_step_mode_calls_run_core_step_with_policy_and_apply_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
