@@ -70,13 +70,6 @@ python -m pip install -e .
 python -m core_runtime.local.backtest --config core_runtime/local/bt_config_local.json
 ```
 
-If `tradingchassis_core` is not already resolvable in your environment, install `core` as a
-sibling editable package in a monorepo workspace:
-
-```bash
-python -m pip install -e ../core
-```
-
 ---
 
 ## Entrypoint matrix
