@@ -370,6 +370,67 @@ def test_apply_control_scheduling_decision_scalar_fallback_without_structured_ob
     assert runner._next_send_ts_ns_local == 12
 
 
+def test_wakeup_collapse_flag_defaults_to_false() -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+    assert runner._enable_core_step_wakeup_collapse is False
+
+
+def test_wakeup_collapse_flag_requires_market_core_step_flag() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            "enable_core_step_wakeup_collapse=True requires "
+            "enable_core_step_market_dispatch=True"
+        ),
+    ):
+        HftStrategyRunner(
+            engine_cfg=_engine_cfg(),
+            strategy=_NoopStrategy(),
+            risk_cfg=_risk_cfg(),
+            core_cfg=_core_cfg(),
+            enable_core_step_market_dispatch=False,
+            enable_core_step_control_time_dispatch=True,
+            enable_core_step_wakeup_collapse=True,
+        )
+
+
+def test_wakeup_collapse_flag_requires_control_core_step_flag() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            "enable_core_step_wakeup_collapse=True requires "
+            "enable_core_step_control_time_dispatch=True"
+        ),
+    ):
+        HftStrategyRunner(
+            engine_cfg=_engine_cfg(),
+            strategy=_NoopStrategy(),
+            risk_cfg=_risk_cfg(),
+            core_cfg=_core_cfg(),
+            enable_core_step_market_dispatch=True,
+            enable_core_step_control_time_dispatch=False,
+            enable_core_step_wakeup_collapse=True,
+        )
+
+
+def test_wakeup_collapse_flag_accepts_when_both_core_step_flags_enabled() -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_market_dispatch=True,
+        enable_core_step_control_time_dispatch=True,
+        enable_core_step_wakeup_collapse=True,
+    )
+    assert runner._enable_core_step_wakeup_collapse is True
+
+
 def test_process_market_event_routes_through_event_entry_with_core_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2984,6 +3045,373 @@ def test_control_time_core_step_mode_failed_dispatch_records_execution_errors(
     failed_intent, failure_reason = runner._last_core_step_execution_errors[0]
     assert failed_intent.client_order_id == dispatchable_new.client_order_id
     assert failure_reason == "EXCHANGE_REJECT"
+
+
+def test_wakeup_collapse_mixed_wakeup_uses_single_core_wakeup_call_and_single_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    market_dispatchable = _new_intent(ts_ns_local=10).model_copy(
+        update={"client_order_id": "cid-market-collapse"}
+    )
+    control_dispatchable = _new_intent(ts_ns_local=10).model_copy(
+        update={"client_order_id": "cid-control-collapse"}
+    )
+    prior_pending = _obligation(due_ts_ns_local=5, obligation_key="pending")
+    next_obligation = _obligation(due_ts_ns_local=25, obligation_key="next")
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_EmitIntentsStrategy([_new_intent(ts_ns_local=10)]),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_market_dispatch=True,
+        enable_core_step_control_time_dispatch=True,
+        enable_core_step_wakeup_collapse=True,
+    )
+    runner._pending_control_scheduling_obligation = prior_pending
+    runner._next_send_ts_ns_local = prior_pending.due_ts_ns_local
+
+    ordering: list[str] = []
+    submitted_positions: list[tuple[int, str]] = []
+    wakeup_calls: list[dict[str, object]] = []
+
+    class _ExecutionCapture:
+        def __init__(self) -> None:
+            self.batches: list[list[str]] = []
+
+        def apply_intents(self, intents: list[Any]) -> list[tuple[Any, str]]:
+            self.batches.append([it.client_order_id for it in intents])
+            return []
+
+    execution = _ExecutionCapture()
+
+    def _spy_run_core_wakeup_step(
+        state: object,
+        entries: tuple[object, ...],
+        **kwargs: object,
+    ) -> CoreStepResult:
+        _ = state
+        strategy_event_filter = kwargs["strategy_event_filter"]
+        wakeup_calls.append(
+            {
+                "entries": tuple(type(entry.event).__name__ for entry in entries),
+                "positions": tuple(entry.position.index for entry in entries),
+                "strategy_event_filter_results": tuple(
+                    strategy_event_filter(entry.event) for entry in entries
+                ),
+                "strategy_evaluator": kwargs["strategy_evaluator"],
+                "snapshot_instrument": kwargs["snapshot_instrument"],
+                "policy_admission_context": kwargs["policy_admission_context"],
+                "execution_control_apply_context": kwargs["execution_control_apply_context"],
+            }
+        )
+        return CoreStepResult(
+            dispatchable_intents=(market_dispatchable, control_dispatchable),
+            control_scheduling_obligation=next_obligation,
+        )
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        _ = (state, configuration)
+        if isinstance(entry.event, OrderSubmittedEvent):
+            ordering.append(f"submitted:{entry.event.client_order_id}")
+            submitted_positions.append((entry.position.index, entry.event.client_order_id))
+
+    def _spy_mark_intent_sent(instrument: str, client_order_id: str, intent_type: str) -> None:
+        _ = (instrument, intent_type)
+        ordering.append(f"mark:{client_order_id}")
+
+    monkeypatch.setattr(
+        strategy_runner_module,
+        "run_core_wakeup_step",
+        _spy_run_core_wakeup_step,
+    )
+    monkeypatch.setattr(
+        strategy_runner_module,
+        "run_core_step",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("collapse mode must not call run_core_step for market/control path")
+        ),
+    )
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("collapse mode must not call runtime risk gate for market/control work")
+        ),
+    )
+    monkeypatch.setattr(
+        runner.strategy,
+        "on_risk_decision",
+        lambda *_: (_ for _ in ()).throw(
+            AssertionError("collapse mode must not synthesize GateDecision callbacks")
+        ),
+    )
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(runner.strategy_state, "mark_intent_sent", _spy_mark_intent_sent)
+
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 0, 1],
+        ts_sequence=[1, 10, 10, 11],
+        depth=_depth_snapshot(),
+    )
+    runner.run(venue=venue, execution=execution, recorder=_RecorderWrapper())
+
+    assert len(wakeup_calls) == 1
+    wakeup_call = wakeup_calls[0]
+    assert wakeup_call["entries"] == ("MarketEvent", "ControlTimeEvent")
+    assert wakeup_call["positions"] == (0, 1)
+    assert wakeup_call["strategy_event_filter_results"] == (True, False)
+    assert wakeup_call["strategy_evaluator"] is not None
+    assert wakeup_call["snapshot_instrument"] == "BTC_USDC-PERPETUAL"
+    assert isinstance(wakeup_call["policy_admission_context"], CorePolicyAdmissionContext)
+    assert isinstance(
+        wakeup_call["execution_control_apply_context"],
+        CoreExecutionControlApplyContext,
+    )
+    assert execution.batches == [[
+        market_dispatchable.client_order_id,
+        control_dispatchable.client_order_id,
+    ]]
+    assert [position for position, _ in submitted_positions] == [2, 3]
+    assert ordering == [
+        f"submitted:{market_dispatchable.client_order_id}",
+        f"mark:{market_dispatchable.client_order_id}",
+        f"submitted:{control_dispatchable.client_order_id}",
+        f"mark:{control_dispatchable.client_order_id}",
+    ]
+    assert runner._last_core_step_execution_errors == []
+    assert runner._pending_control_scheduling_obligation == next_obligation
+    assert runner._next_send_ts_ns_local == next_obligation.due_ts_ns_local
+    assert runner._last_injected_control_deadline_ns == 5
+    assert runner._event_stream_cursor.next_index == 4
+
+
+def test_wakeup_collapse_market_only_path_dispatches_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatchable = _new_intent(ts_ns_local=10).model_copy(
+        update={"client_order_id": "cid-market-only-collapse"}
+    )
+    seeded = _obligation(due_ts_ns_local=99, obligation_key="seeded-market-only")
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_market_dispatch=True,
+        enable_core_step_control_time_dispatch=True,
+        enable_core_step_wakeup_collapse=True,
+    )
+    runner._pending_control_scheduling_obligation = seeded
+    runner._next_send_ts_ns_local = seeded.due_ts_ns_local
+    calls: list[tuple[str, ...]] = []
+
+    class _ExecutionCapture:
+        def __init__(self) -> None:
+            self.batches: list[list[str]] = []
+
+        def apply_intents(self, intents: list[Any]) -> list[tuple[Any, str]]:
+            self.batches.append([it.client_order_id for it in intents])
+            return []
+
+    execution = _ExecutionCapture()
+
+    def _spy_run_core_wakeup_step(
+        state: object,
+        entries: tuple[object, ...],
+        **kwargs: object,
+    ) -> CoreStepResult:
+        _ = (state, kwargs)
+        calls.append(tuple(type(entry.event).__name__ for entry in entries))
+        return CoreStepResult(
+            dispatchable_intents=(dispatchable,),
+            control_scheduling_obligation=None,
+        )
+
+    monkeypatch.setattr(strategy_runner_module, "run_core_wakeup_step", _spy_run_core_wakeup_step)
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("collapse market-only path must not call runtime risk gate")
+        ),
+    )
+
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 1],
+        ts_sequence=[1, 10, 11],
+        depth=_depth_snapshot(),
+    )
+    runner.run(venue=venue, execution=execution, recorder=_RecorderWrapper())
+
+    assert calls == [("MarketEvent",)]
+    assert execution.batches == [[dispatchable.client_order_id]]
+    assert runner._pending_control_scheduling_obligation is None
+    assert runner._next_send_ts_ns_local is None
+
+
+def test_wakeup_collapse_control_only_path_dispatches_once_without_strategy_eval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatchable = _new_intent(ts_ns_local=10).model_copy(
+        update={"client_order_id": "cid-control-only-collapse"}
+    )
+    pending = _obligation(due_ts_ns_local=5, obligation_key="pending-control-only")
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_market_dispatch=True,
+        enable_core_step_control_time_dispatch=True,
+        enable_core_step_wakeup_collapse=True,
+    )
+    runner._pending_control_scheduling_obligation = pending
+    runner._next_send_ts_ns_local = pending.due_ts_ns_local
+    wakeup_calls: list[dict[str, object]] = []
+
+    class _ExecutionCapture:
+        def __init__(self) -> None:
+            self.batches: list[list[str]] = []
+
+        def apply_intents(self, intents: list[Any]) -> list[tuple[Any, str]]:
+            self.batches.append([it.client_order_id for it in intents])
+            return []
+
+    execution = _ExecutionCapture()
+
+    def _spy_run_core_wakeup_step(
+        state: object,
+        entries: tuple[object, ...],
+        **kwargs: object,
+    ) -> CoreStepResult:
+        _ = state
+        wakeup_calls.append(
+            {
+                "entries": tuple(type(entry.event).__name__ for entry in entries),
+                "strategy_evaluator": kwargs["strategy_evaluator"],
+            }
+        )
+        return CoreStepResult(
+            dispatchable_intents=(dispatchable,),
+            control_scheduling_obligation=None,
+        )
+
+    monkeypatch.setattr(strategy_runner_module, "run_core_wakeup_step", _spy_run_core_wakeup_step)
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("collapse control-only path must not call runtime risk gate")
+        ),
+    )
+
+    venue = _StubVenue(
+        rc_sequence=[0, 0, 1],
+        ts_sequence=[1, 10, 11],
+    )
+    runner.run(venue=venue, execution=execution, recorder=_RecorderWrapper())
+
+    assert len(wakeup_calls) == 1
+    wakeup_call = wakeup_calls[0]
+    assert wakeup_call["entries"] == ("ControlTimeEvent",)
+    assert wakeup_call["strategy_evaluator"] is None
+    assert execution.batches == [[dispatchable.client_order_id]]
+    assert runner._pending_control_scheduling_obligation is None
+    assert runner._next_send_ts_ns_local is None
+    assert runner._last_injected_control_deadline_ns == 5
+
+
+def test_wakeup_collapse_failure_before_result_preserves_pending_and_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pending = _obligation(due_ts_ns_local=5, obligation_key="pending-failure")
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_market_dispatch=True,
+        enable_core_step_control_time_dispatch=True,
+        enable_core_step_wakeup_collapse=True,
+    )
+    runner._pending_control_scheduling_obligation = pending
+    runner._next_send_ts_ns_local = pending.due_ts_ns_local
+    submitted_count = 0
+    mark_count = 0
+
+    monkeypatch.setattr(
+        strategy_runner_module,
+        "run_core_wakeup_step",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom-collapse")),
+    )
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        nonlocal submitted_count
+        _ = (state, configuration)
+        if isinstance(entry.event, OrderSubmittedEvent):
+            submitted_count += 1
+
+    def _spy_mark(*args: object, **kwargs: object) -> None:
+        nonlocal mark_count
+        _ = (args, kwargs)
+        mark_count += 1
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(runner.strategy_state, "mark_intent_sent", _spy_mark)
+
+    class _ExecutionMustNotRun:
+        def apply_intents(self, intents: list[Any]) -> list[tuple[Any, str]]:
+            _ = intents
+            raise AssertionError("dispatch must not run after collapse wakeup failure")
+
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 1],
+        ts_sequence=[1, 10, 11],
+        depth=_depth_snapshot(),
+    )
+    with pytest.raises(RuntimeError, match="boom-collapse"):
+        runner.run(venue=venue, execution=_ExecutionMustNotRun(), recorder=_RecorderWrapper())
+
+    assert submitted_count == 0
+    assert mark_count == 0
+    assert runner._pending_control_scheduling_obligation == pending
+    assert runner._next_send_ts_ns_local == pending.due_ts_ns_local
+    assert runner._last_injected_control_deadline_ns is None
+    assert runner._event_stream_cursor.next_index == 0
+
+
+def test_wakeup_collapse_same_deadline_injected_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_market_dispatch=True,
+        enable_core_step_control_time_dispatch=True,
+        enable_core_step_wakeup_collapse=True,
+    )
+    runner._next_send_ts_ns_local = 5
+    calls = {"count": 0}
+
+    def _spy_run_core_wakeup_step(*args: object, **kwargs: object) -> CoreStepResult:
+        _ = (args, kwargs)
+        calls["count"] += 1
+        return CoreStepResult()
+
+    monkeypatch.setattr(
+        strategy_runner_module,
+        "run_core_wakeup_step",
+        _spy_run_core_wakeup_step,
+    )
+    venue = _StubVenue(
+        rc_sequence=[0, 0, 0, 1],
+        ts_sequence=[1, 10, 10, 11],
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert calls["count"] == 1
 
 
 def test_fallback_second_boundary_wakeup_behavior_unchanged(

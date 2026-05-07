@@ -12,11 +12,13 @@ from tradingchassis_core import (
     CoreExecutionControlApplyContext,
     CorePolicyAdmissionContext,
     run_core_step,
+    run_core_wakeup_step,
 )
 from tradingchassis_core.core.domain.configuration import CoreConfiguration
 from tradingchassis_core.core.domain.processing import process_event_entry
 from tradingchassis_core.core.domain.processing_order import (
     EventStreamEntry,
+    ProcessingPosition,
 )
 from tradingchassis_core.core.domain.state import StrategyState
 from tradingchassis_core.core.domain.step_result import CoreStepResult
@@ -100,6 +102,7 @@ class HftStrategyRunner:
         core_cfg: CoreConfiguration,
         enable_core_step_market_dispatch: bool = False,
         enable_core_step_control_time_dispatch: bool = False,
+        enable_core_step_wakeup_collapse: bool = False,
     ) -> None:
         self.engine_cfg = engine_cfg
         self.strategy = strategy
@@ -108,6 +111,20 @@ class HftStrategyRunner:
         self._enable_core_step_control_time_dispatch = (
             enable_core_step_control_time_dispatch
         )
+        self._enable_core_step_wakeup_collapse = enable_core_step_wakeup_collapse
+        if self._enable_core_step_wakeup_collapse and not self._enable_core_step_market_dispatch:
+            raise ValueError(
+                "enable_core_step_wakeup_collapse=True requires "
+                "enable_core_step_market_dispatch=True"
+            )
+        if (
+            self._enable_core_step_wakeup_collapse
+            and not self._enable_core_step_control_time_dispatch
+        ):
+            raise ValueError(
+                "enable_core_step_wakeup_collapse=True requires "
+                "enable_core_step_control_time_dispatch=True"
+            )
 
         event_bus = self._build_event_bus(
             path=Path(engine_cfg.event_bus_path),
@@ -278,19 +295,10 @@ class HftStrategyRunner:
         scheduled_deadline_ns: int,
         scheduling_obligation: ControlSchedulingObligation | None = None,
     ) -> CoreStepResult:
-        obligation_reason = "rate_limit"
-        obligation_due_ts_ns_local = scheduled_deadline_ns
-        if scheduling_obligation is not None:
-            obligation_reason = scheduling_obligation.reason
-            obligation_due_ts_ns_local = scheduling_obligation.due_ts_ns_local
-        control_time_event = ControlTimeEvent(
-            ts_ns_local_control=sim_now_ns,
-            reason="scheduled_control_recheck",
-            due_ts_ns_local=scheduled_deadline_ns,
-            realized_ts_ns_local=sim_now_ns,
-            obligation_reason=obligation_reason,
-            obligation_due_ts_ns_local=obligation_due_ts_ns_local,
-            runtime_correlation=None,
+        control_time_event = self._build_control_time_event(
+            sim_now_ns=sim_now_ns,
+            scheduled_deadline_ns=scheduled_deadline_ns,
+            scheduling_obligation=scheduling_obligation,
         )
         position = self._event_stream_cursor.attempt_position()
         entry = EventStreamEntry(
@@ -328,6 +336,45 @@ class HftStrategyRunner:
         )
         self._event_stream_cursor.commit_success(position)
         return result
+
+    def _build_control_time_event(
+        self,
+        *,
+        sim_now_ns: int,
+        scheduled_deadline_ns: int,
+        scheduling_obligation: ControlSchedulingObligation | None = None,
+    ) -> ControlTimeEvent:
+        obligation_reason = "rate_limit"
+        obligation_due_ts_ns_local = scheduled_deadline_ns
+        if scheduling_obligation is not None:
+            obligation_reason = scheduling_obligation.reason
+            obligation_due_ts_ns_local = scheduling_obligation.due_ts_ns_local
+        return ControlTimeEvent(
+            ts_ns_local_control=sim_now_ns,
+            reason="scheduled_control_recheck",
+            due_ts_ns_local=scheduled_deadline_ns,
+            realized_ts_ns_local=sim_now_ns,
+            obligation_reason=obligation_reason,
+            obligation_due_ts_ns_local=obligation_due_ts_ns_local,
+            runtime_correlation=None,
+        )
+
+    def _allocate_wakeup_entries(
+        self,
+        events: list[object],
+    ) -> tuple[EventStreamEntry, ...]:
+        base_index = self._event_stream_cursor.next_index
+        return tuple(
+            EventStreamEntry(
+                position=ProcessingPosition(index=base_index + offset),
+                event=event,
+            )
+            for offset, event in enumerate(events)
+        )
+
+    def _commit_wakeup_entries(self, entries: tuple[EventStreamEntry, ...]) -> None:
+        for entry in entries:
+            self._event_stream_cursor.commit_success(entry.position)
 
     @staticmethod
     def _select_effective_control_scheduling_obligation(
@@ -480,6 +527,7 @@ class HftStrategyRunner:
             raw_intents: list[OrderIntent] = []
             market_step_result: CoreStepResult | None = None
             control_step_result: CoreStepResult | None = None
+            market_event: MarketEvent | None = None
 
             # -----------------------------------------------------------------
             # Market update
@@ -557,12 +605,15 @@ class HftStrategyRunner:
                 )
 
                 constraints = self.risk.build_constraints(sim_now_ns)
-                market_step_result = self._process_canonical_market_event(
-                    market_event,
-                    constraints=constraints,
-                )
-                if not getattr(self, "_enable_core_step_market_dispatch", False):
-                    raw_intents.extend(market_step_result.generated_intents)
+                if getattr(self, "_enable_core_step_wakeup_collapse", False):
+                    pass
+                else:
+                    market_step_result = self._process_canonical_market_event(
+                        market_event,
+                        constraints=constraints,
+                    )
+                    if not getattr(self, "_enable_core_step_market_dispatch", False):
+                        raw_intents.extend(market_step_result.generated_intents)
 
             # -----------------------------------------------------------------
             # Order / account update
@@ -612,20 +663,86 @@ class HftStrategyRunner:
                     scheduled_deadline_ns
                     != self._last_injected_control_deadline_ns
                 ):
-                    control_step_result = self._process_canonical_control_time_event(
-                        instrument=instrument,
-                        now_ts_ns_local=sim_now_ns,
-                        sim_now_ns=sim_now_ns,
-                        scheduled_deadline_ns=scheduled_deadline_ns,
-                        scheduling_obligation=scheduling_obligation,
-                    )
-                    self._last_injected_control_deadline_ns = scheduled_deadline_ns
-                    if scheduling_obligation is not None:
-                        self._consume_pending_control_scheduling_obligation()
+                    if getattr(self, "_enable_core_step_wakeup_collapse", False):
+                        pass
                     else:
-                        self._next_send_ts_ns_local = None
+                        control_step_result = self._process_canonical_control_time_event(
+                            instrument=instrument,
+                            now_ts_ns_local=sim_now_ns,
+                            sim_now_ns=sim_now_ns,
+                            scheduled_deadline_ns=scheduled_deadline_ns,
+                            scheduling_obligation=scheduling_obligation,
+                        )
+                        self._last_injected_control_deadline_ns = scheduled_deadline_ns
+                        if scheduling_obligation is not None:
+                            self._consume_pending_control_scheduling_obligation()
+                        else:
+                            self._next_send_ts_ns_local = None
 
-            if control_step_result is not None:
+            if getattr(self, "_enable_core_step_wakeup_collapse", False):
+                collapse_events: list[object] = []
+                included_control_time = False
+                if market_event is not None:
+                    collapse_events.append(market_event)
+                if (
+                    scheduled_deadline_ns is not None
+                    and sim_now_ns >= scheduled_deadline_ns
+                    and scheduled_deadline_ns != self._last_injected_control_deadline_ns
+                ):
+                    collapse_events.append(
+                        self._build_control_time_event(
+                            sim_now_ns=sim_now_ns,
+                            scheduled_deadline_ns=scheduled_deadline_ns,
+                            scheduling_obligation=scheduling_obligation,
+                        )
+                    )
+                    included_control_time = True
+
+                if collapse_events:
+                    wakeup_entries = self._allocate_wakeup_entries(collapse_events)
+                    collapse_constraints = self.risk.build_constraints(sim_now_ns)
+                    strategy_evaluator = None
+                    if market_event is not None:
+                        strategy_evaluator = _LegacyOnFeedStrategyEvaluator(
+                            strategy=self.strategy,
+                            engine_cfg=self.engine_cfg,
+                            constraints=collapse_constraints,
+                        )
+                    (
+                        policy_admission_context,
+                        execution_control_apply_context,
+                    ) = self._build_policy_and_apply_context(
+                        now_ts_ns_local=sim_now_ns,
+                    )
+                    wakeup_result = run_core_wakeup_step(
+                        self.strategy_state,
+                        wakeup_entries,
+                        configuration=self._core_cfg,
+                        strategy_evaluator=strategy_evaluator,
+                        strategy_event_filter=lambda event: isinstance(event, MarketEvent),
+                        snapshot_instrument=instrument,
+                        policy_admission_context=policy_admission_context,
+                        execution_control_apply_context=execution_control_apply_context,
+                    )
+                    self._commit_wakeup_entries(wakeup_entries)
+                    if included_control_time and scheduled_deadline_ns is not None:
+                        self._last_injected_control_deadline_ns = scheduled_deadline_ns
+                        if scheduling_obligation is not None:
+                            self._consume_pending_control_scheduling_obligation()
+                        else:
+                            self._next_send_ts_ns_local = None
+                    self._last_core_step_execution_errors = self._dispatch_accepted_intents(
+                        list(wakeup_result.dispatchable_intents),
+                        execution,
+                        sim_now_ns=sim_now_ns,
+                    )
+                    if wakeup_result.control_scheduling_obligation is None:
+                        self._clear_pending_control_scheduling_obligation()
+                    else:
+                        self._apply_control_scheduling_obligation(
+                            wakeup_result.control_scheduling_obligation
+                        )
+            elif control_step_result is not None:
                 if getattr(self, "_enable_core_step_control_time_dispatch", False):
                     self._last_core_step_execution_errors = (
                         self._dispatch_accepted_intents(
@@ -660,6 +777,8 @@ class HftStrategyRunner:
                         )
 
             if (
+                not getattr(self, "_enable_core_step_wakeup_collapse", False)
+                and
                 market_step_result is not None
                 and getattr(self, "_enable_core_step_market_dispatch", False)
             ):
