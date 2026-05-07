@@ -358,27 +358,42 @@ def test_process_market_event_routes_through_event_entry_with_core_configuration
 ) -> None:
     runner = object.__new__(HftStrategyRunner)
     runner.strategy_state = object()
+    runner.strategy = _NoopStrategy()
+    runner.engine_cfg = _engine_cfg()
     runner._core_cfg = _core_cfg()
     runner._event_stream_cursor = EventStreamCursor()
 
-    captured: list[tuple[int, object]] = []
+    captured: list[tuple[int, object, object | None]] = []
 
-    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object,
+        control_time_queue_context: object | None = None,
+        core_decision_context: object | None = None,
+        strategy_evaluator: object | None = None,
+    ) -> CoreStepResult:
         _ = state
-        captured.append((entry.position.index, configuration))
+        _ = core_decision_context
+        captured.append((entry.position.index, configuration, strategy_evaluator))
+        assert control_time_queue_context is None
+        return CoreStepResult()
 
     monkeypatch.setattr(
         strategy_runner_module,
-        "process_event_entry",
-        _spy_process_event_entry,
+        "run_core_step",
+        _spy_run_core_step,
     )
 
-    runner._process_canonical_market_event(_market_event(1))
-    runner._process_canonical_market_event(_market_event(2))
+    runner._process_canonical_market_event(_market_event(1), constraints=SimpleNamespace())
+    runner._process_canonical_market_event(_market_event(2), constraints=SimpleNamespace())
 
-    assert [idx for idx, _ in captured] == [0, 1]
+    assert [idx for idx, _, _ in captured] == [0, 1]
     assert captured[0][1] is runner._core_cfg
     assert captured[1][1] is runner._core_cfg
+    assert captured[0][2] is not None
+    assert captured[1][2] is not None
     assert runner._event_stream_cursor.next_index == 2
 
 
@@ -387,23 +402,35 @@ def test_first_canonical_event_uses_processing_position_zero(
 ) -> None:
     runner = object.__new__(HftStrategyRunner)
     runner.strategy_state = object()
+    runner.strategy = _NoopStrategy()
+    runner.engine_cfg = _engine_cfg()
     runner._core_cfg = _core_cfg()
     runner._event_stream_cursor = EventStreamCursor()
 
     captured: list[int] = []
 
-    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object,
+        control_time_queue_context: object | None = None,
+        core_decision_context: object | None = None,
+        strategy_evaluator: object | None = None,
+    ) -> CoreStepResult:
         _ = state
+        _ = (control_time_queue_context, core_decision_context, strategy_evaluator)
         assert configuration is runner._core_cfg
         captured.append(entry.position.index)
+        return CoreStepResult()
 
     monkeypatch.setattr(
         strategy_runner_module,
-        "process_event_entry",
-        _spy_process_event_entry,
+        "run_core_step",
+        _spy_run_core_step,
     )
 
-    runner._process_canonical_market_event(_market_event(1))
+    runner._process_canonical_market_event(_market_event(1), constraints=SimpleNamespace())
 
     assert captured == [0]
     assert runner._event_stream_cursor.next_index == 1
@@ -429,16 +456,27 @@ def test_market_branch_calls_canonical_boundary_not_update_market(
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("apply_fill_event must not be called")),
     )
 
-    captured: list[tuple[int, object]] = []
+    captured: list[tuple[int, object, str]] = []
 
-    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object,
+        control_time_queue_context: object | None = None,
+        core_decision_context: object | None = None,
+        strategy_evaluator: object | None = None,
+    ) -> CoreStepResult:
         _ = state
-        captured.append((entry.position.index, configuration))
+        _ = (control_time_queue_context, core_decision_context)
+        assert strategy_evaluator is not None
+        captured.append((entry.position.index, configuration, type(entry.event).__name__))
+        return CoreStepResult()
 
     monkeypatch.setattr(
         strategy_runner_module,
-        "process_event_entry",
-        _spy_process_event_entry,
+        "run_core_step",
+        _spy_run_core_step,
     )
 
     venue = _StubVenue(
@@ -448,7 +486,7 @@ def test_market_branch_calls_canonical_boundary_not_update_market(
     )
     runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
 
-    assert captured == [(0, runner._core_cfg)]
+    assert captured == [(0, runner._core_cfg, "MarketEvent")]
 
 
 def test_wait_next_bootstrap_uses_include_order_resp_false_then_true_in_loop() -> None:
@@ -485,15 +523,25 @@ def test_market_mapping_from_depth_snapshot_is_deterministic_golden(
 
     captured_market_events: list[MarketEvent] = []
 
-    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object,
+        control_time_queue_context: object | None = None,
+        core_decision_context: object | None = None,
+        strategy_evaluator: object | None = None,
+    ) -> CoreStepResult:
         _ = (state, configuration)
+        _ = (control_time_queue_context, core_decision_context, strategy_evaluator)
         if isinstance(entry.event, MarketEvent):
             captured_market_events.append(entry.event)
+        return CoreStepResult()
 
     monkeypatch.setattr(
         strategy_runner_module,
-        "process_event_entry",
-        _spy_process_event_entry,
+        "run_core_step",
+        _spy_run_core_step,
     )
 
     venue = _StubVenue(
@@ -515,14 +563,127 @@ def test_market_mapping_from_depth_snapshot_is_deterministic_golden(
     assert market_event.book.asks[0].quantity.value == 0.0
 
 
+def test_market_branch_strategy_evaluator_preserves_legacy_on_feed_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generated_intent = _new_intent(ts_ns_local=2_000_000_000)
+    constraints_obj = SimpleNamespace(tag="constraints")
+    on_feed_calls: list[tuple[object, object, object, object]] = []
+    risk_calls: list[list[object]] = []
+
+    class _SpyStrategy(Strategy):
+        def on_feed(self, state: Any, event: Any, engine_cfg: Any, constraints: Any) -> list[Any]:
+            on_feed_calls.append((state, event, engine_cfg, constraints))
+            return [generated_intent]
+
+        def on_order_update(self, state: Any, engine_cfg: Any, constraints: Any) -> list[Any]:
+            _ = (state, engine_cfg, constraints)
+            return []
+
+        def on_risk_decision(self, decision: Any) -> None:
+            _ = decision
+
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_SpyStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+    monkeypatch.setattr(runner.risk, "build_constraints", lambda _ts: constraints_obj)
+
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object,
+        control_time_queue_context: object | None = None,
+        core_decision_context: object | None = None,
+        strategy_evaluator: object | None = None,
+    ) -> CoreStepResult:
+        _ = core_decision_context
+        assert control_time_queue_context is None
+        assert strategy_evaluator is not None
+        evaluated = strategy_evaluator.evaluate(
+            SimpleNamespace(
+                state=state,
+                event=entry.event,
+                position=entry.position,
+                configuration=configuration,
+            )
+        )
+        return CoreStepResult(generated_intents=tuple(evaluated))
+
+    def _spy_decide_intents(**kwargs: object) -> GateDecision:
+        risk_calls.append(list(kwargs["raw_intents"]))
+        return _decision_for([])
+
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
+    monkeypatch.setattr(runner.risk, "decide_intents", _spy_decide_intents)
+
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 1],
+        ts_sequence=[1, 2_000_000_000, 2_000_000_001],
+        depth=_depth_snapshot(),
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert len(on_feed_calls) == 1
+    state_arg, event_arg, engine_cfg_arg, constraints_arg = on_feed_calls[0]
+    assert state_arg is runner.strategy_state
+    assert isinstance(event_arg, MarketEvent)
+    assert engine_cfg_arg is runner.engine_cfg
+    assert constraints_arg is constraints_obj
+    assert len(risk_calls) == 1
+    assert risk_calls[0] == [generated_intent]
+
+
+def test_market_run_core_step_failure_does_not_commit_or_reach_risk_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+    )
+
+    def _fail_run_core_step(*args: object, **kwargs: object) -> CoreStepResult:
+        _ = (args, kwargs)
+        raise RuntimeError("boom-market-core-step")
+
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _fail_run_core_step)
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("risk gate must not run after market core-step failure")
+        ),
+    )
+
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 1],
+        ts_sequence=[1, 2, 3],
+        depth=_depth_snapshot(),
+    )
+    with pytest.raises(RuntimeError, match="boom-market-core-step"):
+        runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert runner._event_stream_cursor.next_index == 0
+
+
 def test_missing_core_cfg_fails_before_market_mutation() -> None:
     runner = object.__new__(HftStrategyRunner)
     runner.strategy_state = StrategyState(event_bus=EventBus(sinks=[]))
+    runner.strategy = _NoopStrategy()
+    runner.engine_cfg = _engine_cfg()
     runner._core_cfg = None
     runner._event_stream_cursor = EventStreamCursor()
 
     with pytest.raises(ValueError, match="CoreConfiguration is required"):
-        runner._process_canonical_market_event(_market_event(42))
+        runner._process_canonical_market_event(
+            _market_event(42),
+            constraints=SimpleNamespace(),
+        )
 
     assert runner.strategy_state.market == {}
     assert runner.strategy_state._last_processing_position_index is None
@@ -532,11 +693,16 @@ def test_missing_core_cfg_fails_before_market_mutation() -> None:
 def test_invalid_core_cfg_type_fails_before_market_mutation() -> None:
     runner = object.__new__(HftStrategyRunner)
     runner.strategy_state = StrategyState(event_bus=EventBus(sinks=[]))
+    runner.strategy = _NoopStrategy()
+    runner.engine_cfg = _engine_cfg()
     runner._core_cfg = object()
     runner._event_stream_cursor = EventStreamCursor()
 
     with pytest.raises(TypeError, match="configuration must be CoreConfiguration or None"):
-        runner._process_canonical_market_event(_market_event(42))
+        runner._process_canonical_market_event(
+            _market_event(42),
+            constraints=SimpleNamespace(),
+        )
 
     assert runner.strategy_state.market == {}
     assert runner.strategy_state._last_processing_position_index is None
@@ -915,7 +1081,22 @@ def test_global_canonical_counter_shared_between_market_and_order_submitted(
         event_name = type(entry.event).__name__
         positions.append((entry.position.index, event_name))
 
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object,
+        control_time_queue_context: object | None = None,
+        core_decision_context: object | None = None,
+        strategy_evaluator: object | None = None,
+    ) -> CoreStepResult:
+        _ = (state, configuration, core_decision_context, strategy_evaluator)
+        assert control_time_queue_context is None
+        positions.append((entry.position.index, type(entry.event).__name__))
+        return CoreStepResult(generated_intents=(new_intent,))
+
     monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
 
     venue = _StubVenue(
         rc_sequence=[0, 2, 1],
@@ -936,26 +1117,35 @@ def test_canonical_counter_increments_only_after_successful_canonical_processing
 ) -> None:
     runner = object.__new__(HftStrategyRunner)
     runner.strategy_state = object()
+    runner.strategy = _NoopStrategy()
+    runner.engine_cfg = _engine_cfg()
     runner._core_cfg = _core_cfg()
     runner._event_stream_cursor = EventStreamCursor()
 
-    def _fail(*args: object, **kwargs: object) -> None:
+    def _fail(*args: object, **kwargs: object) -> CoreStepResult:
         _ = (args, kwargs)
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _fail)
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _fail)
     with pytest.raises(RuntimeError, match="boom"):
-        runner._process_canonical_market_event(_market_event(1))
+        runner._process_canonical_market_event(
+            _market_event(1),
+            constraints=SimpleNamespace(),
+        )
     assert runner._event_stream_cursor.next_index == 0
 
     called = {"count": 0}
 
-    def _ok(*args: object, **kwargs: object) -> None:
+    def _ok(*args: object, **kwargs: object) -> CoreStepResult:
         _ = (args, kwargs)
         called["count"] += 1
+        return CoreStepResult()
 
-    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _ok)
-    runner._process_canonical_market_event(_market_event(2))
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _ok)
+    runner._process_canonical_market_event(
+        _market_event(2),
+        constraints=SimpleNamespace(),
+    )
     assert called["count"] == 1
     assert runner._event_stream_cursor.next_index == 1
 
@@ -979,8 +1169,15 @@ def test_control_time_event_injected_when_scheduled_deadline_is_realized(
         *,
         configuration: object,
         control_time_queue_context: object | None = None,
+        core_decision_context: object | None = None,
+        strategy_evaluator: object | None = None,
     ) -> CoreStepResult:
         _ = (state, configuration)
+        _ = core_decision_context
+        if isinstance(entry.event, MarketEvent):
+            assert control_time_queue_context is None
+            assert strategy_evaluator is not None
+            return CoreStepResult(generated_intents=(_new_intent(),))
         assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
         if isinstance(entry.event, ControlTimeEvent):
             control_events.append(entry.event)
@@ -1080,8 +1277,15 @@ def test_control_time_event_uses_structured_obligation_fields_when_available(
         *,
         configuration: object,
         control_time_queue_context: object | None = None,
+        core_decision_context: object | None = None,
+        strategy_evaluator: object | None = None,
     ) -> CoreStepResult:
         _ = (state, configuration)
+        _ = core_decision_context
+        if isinstance(entry.event, MarketEvent):
+            assert control_time_queue_context is None
+            assert strategy_evaluator is not None
+            return CoreStepResult(generated_intents=(_new_intent(),))
         assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
         if isinstance(entry.event, ControlTimeEvent):
             control_events.append(entry.event)
@@ -1351,17 +1555,28 @@ def test_market_and_order_submitted_paths_remain_on_process_event_entry_path(
     )
 
     process_event_names: list[str] = []
+    run_core_step_names: list[str] = []
 
     def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
         _ = (state, configuration)
         process_event_names.append(type(entry.event).__name__)
 
-    def _fail_run_core_step(*args: object, **kwargs: object) -> CoreStepResult:
-        _ = (args, kwargs)
-        raise AssertionError("run_core_step must not be used for market/order-submitted path")
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object,
+        control_time_queue_context: object | None = None,
+        core_decision_context: object | None = None,
+        strategy_evaluator: object | None = None,
+    ) -> CoreStepResult:
+        _ = (state, configuration, core_decision_context, strategy_evaluator)
+        assert control_time_queue_context is None
+        run_core_step_names.append(type(entry.event).__name__)
+        return CoreStepResult(generated_intents=(new_intent,))
 
     monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
-    monkeypatch.setattr(strategy_runner_module, "run_core_step", _fail_run_core_step)
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
 
     venue = _StubVenue(
         rc_sequence=[0, 2, 1],
@@ -1370,7 +1585,8 @@ def test_market_and_order_submitted_paths_remain_on_process_event_entry_path(
     )
     runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
 
-    assert process_event_names == ["MarketEvent", "OrderSubmittedEvent"]
+    assert run_core_step_names == ["MarketEvent"]
+    assert process_event_names == ["OrderSubmittedEvent"]
 
 
 def test_control_time_success_consumes_pending_obligation_after_core_step(
@@ -1491,10 +1707,16 @@ def test_global_canonical_counter_shared_with_control_time_market_and_submitted(
         *,
         configuration: object,
         control_time_queue_context: object | None = None,
+        core_decision_context: object | None = None,
+        strategy_evaluator: object | None = None,
     ) -> CoreStepResult:
         _ = (state, configuration)
-        assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
+        _ = (core_decision_context, strategy_evaluator)
         positions.append((entry.position.index, type(entry.event).__name__))
+        if isinstance(entry.event, MarketEvent):
+            assert control_time_queue_context is None
+            return CoreStepResult(generated_intents=(new_intent,))
+        assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
         return CoreStepResult()
 
     monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
@@ -1623,8 +1845,14 @@ def test_same_wakeup_strategy_and_control_time_intents_are_processed_in_two_deci
         *,
         configuration: object,
         control_time_queue_context: object | None = None,
+        core_decision_context: object | None = None,
+        strategy_evaluator: object | None = None,
     ) -> CoreStepResult:
         _ = (state, entry, configuration)
+        _ = (core_decision_context, strategy_evaluator)
+        if isinstance(entry.event, MarketEvent):
+            assert control_time_queue_context is None
+            return CoreStepResult(generated_intents=(strategy_intent,))
         assert isinstance(control_time_queue_context, ControlTimeQueueReevaluationContext)
         return CoreStepResult(
             dispatchable_intents=(control_intent,),

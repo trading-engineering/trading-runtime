@@ -52,6 +52,31 @@ if TYPE_CHECKING:
 MAX_TIMEOUT_NS = 1 << 62  # Effectively "wait forever" without a heartbeat
 
 
+class _LegacyOnFeedStrategyEvaluator:
+    """Runtime-local adapter from legacy Strategy.on_feed to CoreStep evaluator."""
+
+    def __init__(
+        self,
+        *,
+        strategy: Strategy,
+        engine_cfg: HftEngineConfig,
+        constraints: object,
+    ) -> None:
+        self._strategy = strategy
+        self._engine_cfg = engine_cfg
+        self._constraints = constraints
+
+    def evaluate(self, context: object) -> tuple[OrderIntent, ...]:
+        return tuple(
+            self._strategy.on_feed(
+                context.state,
+                context.event,
+                self._engine_cfg,
+                self._constraints,
+            )
+        )
+
+
 class HftStrategyRunner:
     """Strategy runner for HFT backtests.
 
@@ -143,8 +168,29 @@ class HftStrategyRunner:
 
         return sorted(intents, key=lambda it: (intent_priority(it), it.ts_ns_local))
 
-    def _process_canonical_market_event(self, market_event: MarketEvent) -> None:
-        self._process_canonical_event(market_event)
+    def _process_canonical_market_event(
+        self,
+        market_event: MarketEvent,
+        *,
+        constraints: object,
+    ) -> CoreStepResult:
+        position = self._event_stream_cursor.attempt_position()
+        entry = EventStreamEntry(
+            position=position,
+            event=market_event,
+        )
+        result = run_core_step(
+            self.strategy_state,
+            entry,
+            configuration=self._core_cfg,
+            strategy_evaluator=_LegacyOnFeedStrategyEvaluator(
+                strategy=self.strategy,
+                engine_cfg=self.engine_cfg,
+                constraints=constraints,
+            ),
+        )
+        self._event_stream_cursor.commit_success(position)
+        return result
 
     def _process_canonical_order_submitted_event(
         self,
@@ -434,17 +480,12 @@ class HftStrategyRunner:
                     ),
                 )
 
-                self._process_canonical_market_event(market_event)
-
                 constraints = self.risk.build_constraints(sim_now_ns)
-                raw_intents.extend(
-                    self.strategy.on_feed(
-                        self.strategy_state,
-                        market_event,
-                        self.engine_cfg,
-                        constraints,
-                    )
+                market_step_result = self._process_canonical_market_event(
+                    market_event,
+                    constraints=constraints,
                 )
+                raw_intents.extend(market_step_result.generated_intents)
 
             # -----------------------------------------------------------------
             # Order / account update
