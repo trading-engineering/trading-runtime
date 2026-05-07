@@ -18,6 +18,30 @@ def test_attempt_position_does_not_advance_cursor() -> None:
     assert cursor.next_index == 0
 
 
+def test_attempt_positions_does_not_advance_cursor_and_returns_batch() -> None:
+    cursor = EventStreamCursor(start_index=5)
+    attempted = cursor.attempt_positions(3)
+    assert tuple(position.index for position in attempted) == (5, 6, 7)
+    assert cursor.next_index == 5
+
+
+def test_attempt_positions_rejects_negative_count() -> None:
+    cursor = EventStreamCursor()
+    with pytest.raises(ValueError, match="count must be >= 0"):
+        cursor.attempt_positions(-1)
+    assert cursor.next_index == 0
+
+
+def test_attempt_positions_commit_success_advances_in_batch_order() -> None:
+    cursor = EventStreamCursor()
+    attempted = cursor.attempt_positions(2)
+
+    cursor.commit_success(attempted[0])
+    cursor.commit_success(attempted[1])
+
+    assert cursor.next_index == 2
+
+
 def test_commit_success_advances_by_one() -> None:
     cursor = EventStreamCursor()
     attempted = cursor.attempt_position()

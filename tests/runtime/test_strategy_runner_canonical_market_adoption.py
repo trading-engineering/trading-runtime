@@ -3102,11 +3102,14 @@ def test_wakeup_collapse_mixed_wakeup_uses_single_core_wakeup_call_and_single_di
                 "snapshot_instrument": kwargs["snapshot_instrument"],
                 "policy_admission_context": kwargs["policy_admission_context"],
                 "execution_control_apply_context": kwargs["execution_control_apply_context"],
+                "has_control_time_queue_context": "control_time_queue_context" in kwargs,
+                "has_core_decision_context": "core_decision_context" in kwargs,
             }
         )
         return CoreStepResult(
             dispatchable_intents=(market_dispatchable, control_dispatchable),
             control_scheduling_obligation=next_obligation,
+            compat_gate_decision=_decision_for([]),
         )
 
     def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
@@ -3167,6 +3170,9 @@ def test_wakeup_collapse_mixed_wakeup_uses_single_core_wakeup_call_and_single_di
         wakeup_call["execution_control_apply_context"],
         CoreExecutionControlApplyContext,
     )
+    assert wakeup_call["execution_control_apply_context"].activate_dispatchable_outputs is True
+    assert wakeup_call["has_control_time_queue_context"] is False
+    assert wakeup_call["has_core_decision_context"] is False
     assert execution.batches == [[
         market_dispatchable.client_order_id,
         control_dispatchable.client_order_id,
@@ -3412,6 +3418,116 @@ def test_wakeup_collapse_same_deadline_injected_once(
     runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
 
     assert calls["count"] == 1
+
+
+def test_wakeup_collapse_failed_new_dispatch_records_errors_without_submitted_or_mark(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatchable_new = _new_intent(ts_ns_local=10).model_copy(
+        update={"client_order_id": "cid-collapse-failed-new"}
+    )
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_market_dispatch=True,
+        enable_core_step_control_time_dispatch=True,
+        enable_core_step_wakeup_collapse=True,
+    )
+    submitted_count = 0
+    marked_count = 0
+
+    monkeypatch.setattr(
+        strategy_runner_module,
+        "run_core_wakeup_step",
+        lambda *args, **kwargs: CoreStepResult(
+            dispatchable_intents=(dispatchable_new,),
+        ),
+    )
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        nonlocal submitted_count
+        _ = (state, configuration)
+        if isinstance(entry.event, OrderSubmittedEvent):
+            submitted_count += 1
+
+    def _spy_mark_intent_sent(instrument: str, client_order_id: str, intent_type: str) -> None:
+        nonlocal marked_count
+        _ = (instrument, client_order_id, intent_type)
+        marked_count += 1
+
+    class _ExecutionFailNew:
+        def apply_intents(self, intents: list[Any]) -> list[tuple[Any, str]]:
+            _ = intents
+            return [(dispatchable_new, "EXCHANGE_REJECT")]
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(runner.strategy_state, "mark_intent_sent", _spy_mark_intent_sent)
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 1],
+        ts_sequence=[1, 10, 11],
+        depth=_depth_snapshot(),
+    )
+    runner.run(venue=venue, execution=_ExecutionFailNew(), recorder=_RecorderWrapper())
+
+    assert submitted_count == 0
+    assert marked_count == 0
+    assert len(runner._last_core_step_execution_errors) == 1
+    failed_intent, failure_reason = runner._last_core_step_execution_errors[0]
+    assert failed_intent.client_order_id == dispatchable_new.client_order_id
+    assert failure_reason == "EXCHANGE_REJECT"
+
+
+def test_wakeup_collapse_replace_cancel_emit_no_order_submitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    replace_intent = _replace_intent(ts_ns_local=10)
+    cancel_intent = _cancel_intent(ts_ns_local=10)
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_market_dispatch=True,
+        enable_core_step_control_time_dispatch=True,
+        enable_core_step_wakeup_collapse=True,
+    )
+    submitted_count = 0
+    marks: list[tuple[str, str, str]] = []
+
+    monkeypatch.setattr(
+        strategy_runner_module,
+        "run_core_wakeup_step",
+        lambda *args, **kwargs: CoreStepResult(
+            dispatchable_intents=(replace_intent, cancel_intent),
+        ),
+    )
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        nonlocal submitted_count
+        _ = (state, configuration)
+        if isinstance(entry.event, OrderSubmittedEvent):
+            submitted_count += 1
+
+    def _spy_mark_intent_sent(instrument: str, client_order_id: str, intent_type: str) -> None:
+        marks.append((instrument, client_order_id, intent_type))
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(runner.strategy_state, "mark_intent_sent", _spy_mark_intent_sent)
+    venue = _StubVenue(
+        rc_sequence=[0, 2, 1],
+        ts_sequence=[1, 10, 11],
+        depth=_depth_snapshot(),
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert submitted_count == 0
+    assert marks == [
+        (replace_intent.instrument, replace_intent.client_order_id, "replace"),
+        (cancel_intent.instrument, cancel_intent.client_order_id, "cancel"),
+    ]
+    assert runner._last_core_step_execution_errors == []
 
 
 def test_fallback_second_boundary_wakeup_behavior_unchanged(

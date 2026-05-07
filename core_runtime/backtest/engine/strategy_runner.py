@@ -18,7 +18,6 @@ from tradingchassis_core.core.domain.configuration import CoreConfiguration
 from tradingchassis_core.core.domain.processing import process_event_entry
 from tradingchassis_core.core.domain.processing_order import (
     EventStreamEntry,
-    ProcessingPosition,
 )
 from tradingchassis_core.core.domain.state import StrategyState
 from tradingchassis_core.core.domain.step_result import CoreStepResult
@@ -363,13 +362,13 @@ class HftStrategyRunner:
         self,
         events: list[object],
     ) -> tuple[EventStreamEntry, ...]:
-        base_index = self._event_stream_cursor.next_index
+        positions = self._event_stream_cursor.attempt_positions(len(events))
         return tuple(
             EventStreamEntry(
-                position=ProcessingPosition(index=base_index + offset),
+                position=position,
                 event=event,
             )
-            for offset, event in enumerate(events)
+            for position, event in zip(positions, events, strict=True)
         )
 
     def _commit_wakeup_entries(self, entries: tuple[EventStreamEntry, ...]) -> None:
