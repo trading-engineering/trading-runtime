@@ -21,6 +21,7 @@ from tradingchassis_core.core.domain.types import (
     FillEvent,
     MarketEvent,
     NewOrderIntent,
+    OrderExecutionFeedbackEvent,
     OrderSubmittedEvent,
     Price,
     Quantity,
@@ -1233,6 +1234,296 @@ def test_order_update_path_remains_legacy_when_market_core_step_mode_enabled() -
 
     assert len(risk_calls) == 1
     assert risk_calls[0] == [order_update_intent]
+
+
+def test_order_update_core_step_mode_routes_rc3_through_canonical_event_and_dispatchables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatchable = _cancel_intent(ts_ns_local=2)
+    captured_positions: list[int] = []
+    strategy_order_update_calls = {"count": 0}
+    execution_batches: list[list[str]] = []
+
+    class _OrderUpdateSpyStrategy(Strategy):
+        def on_feed(self, state: Any, event: Any, engine_cfg: Any, constraints: Any) -> list[Any]:
+            _ = (state, event, engine_cfg, constraints)
+            return []
+
+        def on_order_update(self, state: Any, engine_cfg: Any, constraints: Any) -> list[Any]:
+            _ = (state, engine_cfg, constraints)
+            strategy_order_update_calls["count"] += 1
+            return []
+
+        def on_risk_decision(self, decision: Any) -> None:
+            _ = decision
+
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_OrderUpdateSpyStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_order_feedback_dispatch=True,
+    )
+
+    def _spy_run_core_step(
+        state: object,
+        entry: object,
+        *,
+        configuration: object | None = None,
+        control_time_queue_context: object | None = None,
+        policy_admission_context: object | None = None,
+        execution_control_apply_context: object | None = None,
+        core_decision_context: object | None = None,
+        strategy_evaluator: object | None = None,
+    ) -> CoreStepResult:
+        _ = state
+        _ = core_decision_context
+        assert isinstance(entry.event, OrderExecutionFeedbackEvent)
+        captured_positions.append(entry.position.index)
+        assert configuration is runner._core_cfg
+        assert control_time_queue_context is None
+        assert isinstance(policy_admission_context, CorePolicyAdmissionContext)
+        assert isinstance(execution_control_apply_context, CoreExecutionControlApplyContext)
+        assert strategy_evaluator is not None
+        evaluated = strategy_evaluator.evaluate(
+            SimpleNamespace(
+                state=runner.strategy_state,
+                event=entry.event,
+                position=entry.position,
+                configuration=configuration,
+            )
+        )
+        assert evaluated == ()
+        return CoreStepResult(
+            generated_intents=tuple(evaluated),
+            dispatchable_intents=(dispatchable,),
+        )
+
+    class _ExecutionCapture:
+        def apply_intents(self, intents: list[Any]) -> list[tuple[Any, str]]:
+            execution_batches.append([it.client_order_id for it in intents])
+            return []
+
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("rc3 core-step mode must not call runtime risk gate")
+        ),
+    )
+
+    venue = _StubVenue(
+        rc_sequence=[0, 3, 1],
+        ts_sequence=[1, 2, 3],
+        state_values=SimpleNamespace(
+            position=0.0,
+            balance=1000.0,
+            fee=0.0,
+            trading_volume=0.0,
+            trading_value=0.0,
+            num_trades=0,
+        ),
+        orders={
+            "101": SimpleNamespace(
+                order_id="101",
+                order_type=0,
+                side=1,
+                time_in_force=0,
+                status=1,
+                req=0,
+                price=100.0,
+                qty=1.0,
+                exec_price=100.25,
+                exec_qty=0.25,
+                leaves_qty=0.75,
+                exch_timestamp=2,
+                local_timestamp=2,
+            )
+        },
+    )
+    runner.run(venue=venue, execution=_ExecutionCapture(), recorder=_RecorderWrapper())
+
+    assert captured_positions == [0]
+    assert strategy_order_update_calls["count"] == 1
+    assert execution_batches == [[dispatchable.client_order_id]]
+
+
+def test_order_update_core_step_mode_preserves_order_submitted_before_mark_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatchable_new = _new_intent()
+    ordering: list[str] = []
+
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_order_feedback_dispatch=True,
+    )
+
+    monkeypatch.setattr(
+        strategy_runner_module,
+        "run_core_step",
+        lambda *args, **kwargs: CoreStepResult(
+            dispatchable_intents=(dispatchable_new,),
+        ),
+    )
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("rc3 core-step mode must not call runtime risk gate")
+        ),
+    )
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        _ = (state, configuration)
+        if isinstance(entry.event, OrderSubmittedEvent):
+            ordering.append("submitted")
+
+    def _spy_mark_intent_sent(instrument: str, client_order_id: str, intent_type: str) -> None:
+        _ = (instrument, client_order_id, intent_type)
+        ordering.append("mark")
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(runner.strategy_state, "mark_intent_sent", _spy_mark_intent_sent)
+
+    venue = _StubVenue(
+        rc_sequence=[0, 3, 1],
+        ts_sequence=[11, 12, 13],
+        state_values=SimpleNamespace(
+            position=0.0,
+            balance=1000.0,
+            fee=0.0,
+            trading_volume=0.0,
+            trading_value=0.0,
+            num_trades=0,
+        ),
+        orders={},
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert ordering == ["submitted", "mark"]
+
+
+def test_order_update_core_step_mode_failed_new_dispatch_emits_no_order_submitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatchable_new = _new_intent()
+    submitted_count = {"count": 0}
+    marked_count = {"count": 0}
+
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_order_feedback_dispatch=True,
+    )
+
+    monkeypatch.setattr(
+        strategy_runner_module,
+        "run_core_step",
+        lambda *args, **kwargs: CoreStepResult(
+            dispatchable_intents=(dispatchable_new,),
+        ),
+    )
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("rc3 core-step mode must not call runtime risk gate")
+        ),
+    )
+
+    def _spy_process_event_entry(state: object, entry: object, *, configuration: object) -> None:
+        _ = (state, configuration)
+        if isinstance(entry.event, OrderSubmittedEvent):
+            submitted_count["count"] += 1
+
+    def _spy_mark_intent_sent(instrument: str, client_order_id: str, intent_type: str) -> None:
+        _ = (instrument, client_order_id, intent_type)
+        marked_count["count"] += 1
+
+    class _ExecutionFailNew:
+        def apply_intents(self, intents: list[Any]) -> list[tuple[Any, str]]:
+            _ = intents
+            return [(dispatchable_new, "EXCHANGE_REJECT")]
+
+    monkeypatch.setattr(strategy_runner_module, "process_event_entry", _spy_process_event_entry)
+    monkeypatch.setattr(runner.strategy_state, "mark_intent_sent", _spy_mark_intent_sent)
+
+    venue = _StubVenue(
+        rc_sequence=[0, 3, 1],
+        ts_sequence=[21, 22, 23],
+        state_values=SimpleNamespace(
+            position=0.0,
+            balance=1000.0,
+            fee=0.0,
+            trading_volume=0.0,
+            trading_value=0.0,
+            num_trades=0,
+        ),
+        orders={},
+    )
+    runner.run(
+        venue=venue,
+        execution=_ExecutionFailNew(),
+        recorder=_RecorderWrapper(),
+    )
+
+    assert submitted_count["count"] == 0
+    assert marked_count["count"] == 0
+    assert len(runner._last_core_step_execution_errors) == 1
+
+
+def test_order_update_core_step_mode_applies_and_clears_control_scheduling_obligation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    obligation = _obligation(due_ts_ns_local=9, obligation_key="rc3")
+    results = iter(
+        (
+            CoreStepResult(control_scheduling_obligation=obligation),
+            CoreStepResult(control_scheduling_obligation=None),
+        )
+    )
+
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_order_feedback_dispatch=True,
+    )
+
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", lambda *args, **kwargs: next(results))
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("rc3 core-step mode must not call runtime risk gate")
+        ),
+    )
+
+    venue = _StubVenue(
+        rc_sequence=[0, 3, 3, 1],
+        ts_sequence=[1, 5, 6, 7],
+        state_values=SimpleNamespace(
+            position=0.0,
+            balance=1000.0,
+            fee=0.0,
+            trading_volume=0.0,
+            trading_value=0.0,
+            num_trades=0,
+        ),
+        orders={},
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert runner._pending_control_scheduling_obligation is None
+    assert runner._next_send_ts_ns_local is None
 
 
 def test_market_run_core_step_failure_does_not_commit_or_reach_risk_dispatch(

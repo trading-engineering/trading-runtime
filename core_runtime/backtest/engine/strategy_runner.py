@@ -27,6 +27,8 @@ from tradingchassis_core.core.domain.types import (
     ControlTimeEvent,
     MarketEvent,
     NewOrderIntent,
+    OrderExecutionFeedbackEvent,
+    OrderExecutionFeedbackSnapshot,
     OrderIntent,
     OrderSubmittedEvent,
     Price,
@@ -83,6 +85,30 @@ class _LegacyOnFeedStrategyEvaluator:
         )
 
 
+class _LegacyOnOrderUpdateStrategyEvaluator:
+    """Runtime-local adapter from legacy Strategy.on_order_update to CoreStep."""
+
+    def __init__(
+        self,
+        *,
+        strategy: Strategy,
+        engine_cfg: HftEngineConfig,
+        constraints: object,
+    ) -> None:
+        self._strategy = strategy
+        self._engine_cfg = engine_cfg
+        self._constraints = constraints
+
+    def evaluate(self, context: object) -> tuple[OrderIntent, ...]:
+        return tuple(
+            self._strategy.on_order_update(
+                context.state,
+                self._engine_cfg,
+                self._constraints,
+            )
+        )
+
+
 class HftStrategyRunner:
     """Strategy runner for HFT backtests.
 
@@ -102,6 +128,7 @@ class HftStrategyRunner:
         enable_core_step_market_dispatch: bool = False,
         enable_core_step_control_time_dispatch: bool = False,
         enable_core_step_wakeup_collapse: bool = False,
+        enable_core_step_order_feedback_dispatch: bool = False,
     ) -> None:
         self.engine_cfg = engine_cfg
         self.strategy = strategy
@@ -111,6 +138,9 @@ class HftStrategyRunner:
             enable_core_step_control_time_dispatch
         )
         self._enable_core_step_wakeup_collapse = enable_core_step_wakeup_collapse
+        self._enable_core_step_order_feedback_dispatch = (
+            enable_core_step_order_feedback_dispatch
+        )
         if self._enable_core_step_wakeup_collapse and not self._enable_core_step_market_dispatch:
             raise ValueError(
                 "enable_core_step_wakeup_collapse=True requires "
@@ -284,6 +314,93 @@ class HftStrategyRunner:
             runtime_correlation=None,
         )
         self._process_canonical_event(order_submitted_event)
+
+    @staticmethod
+    def _iter_order_snapshot_rows(order_snapshots: object) -> list[object]:
+        if hasattr(order_snapshots, "values"):
+            values = order_snapshots.values
+            if callable(values):
+                return list(values())
+        if hasattr(order_snapshots, "has_next") and hasattr(order_snapshots, "get"):
+            rows: list[object] = []
+            while order_snapshots.has_next():
+                row = order_snapshots.get()
+                if row is None:
+                    break
+                rows.append(row)
+            return rows
+        return list(order_snapshots)
+
+    def _build_order_execution_feedback_event(
+        self,
+        *,
+        instrument: str,
+        sim_now_ns: int,
+        state_values: object,
+        order_snapshots: object,
+    ) -> OrderExecutionFeedbackEvent:
+        snapshots = tuple(
+            OrderExecutionFeedbackSnapshot(
+                order_id=str(row.order_id),
+                order_type=int(row.order_type),
+                side=int(row.side),
+                time_in_force=int(row.time_in_force),
+                status=int(row.status),
+                req=int(row.req),
+                price=float(row.price),
+                qty=float(row.qty),
+                exec_price=float(row.exec_price),
+                exec_qty=float(row.exec_qty),
+                leaves_qty=float(row.leaves_qty),
+                ts_ns_exch=int(row.exch_timestamp),
+                ts_ns_local=int(row.local_timestamp),
+            )
+            for row in self._iter_order_snapshot_rows(order_snapshots)
+        )
+        return OrderExecutionFeedbackEvent(
+            ts_ns_local_feedback=sim_now_ns,
+            instrument=instrument,
+            position=float(state_values.position),
+            balance=float(state_values.balance),
+            fee=float(state_values.fee),
+            trading_volume=float(state_values.trading_volume),
+            trading_value=float(state_values.trading_value),
+            num_trades=int(state_values.num_trades),
+            order_snapshots=snapshots,
+            runtime_correlation=None,
+        )
+
+    def _process_canonical_order_feedback_event(
+        self,
+        order_feedback_event: OrderExecutionFeedbackEvent,
+        *,
+        constraints: object,
+    ) -> CoreStepResult:
+        position = self._event_stream_cursor.attempt_position()
+        entry = EventStreamEntry(
+            position=position,
+            event=order_feedback_event,
+        )
+        (
+            policy_admission_context,
+            execution_control_apply_context,
+        ) = self._build_policy_and_apply_context(
+            now_ts_ns_local=order_feedback_event.ts_ns_local_feedback,
+        )
+        result = run_core_step(
+            self.strategy_state,
+            entry,
+            configuration=self._core_cfg,
+            strategy_evaluator=_LegacyOnOrderUpdateStrategyEvaluator(
+                strategy=self.strategy,
+                engine_cfg=self.engine_cfg,
+                constraints=constraints,
+            ),
+            policy_admission_context=policy_admission_context,
+            execution_control_apply_context=execution_control_apply_context,
+        )
+        self._event_stream_cursor.commit_success(position)
+        return result
 
     def _process_canonical_control_time_event(
         self,
@@ -526,6 +643,7 @@ class HftStrategyRunner:
             raw_intents: list[OrderIntent] = []
             market_step_result: CoreStepResult | None = None
             control_step_result: CoreStepResult | None = None
+            order_feedback_step_result: CoreStepResult | None = None
             market_event: MarketEvent | None = None
 
             # -----------------------------------------------------------------
@@ -619,29 +737,43 @@ class HftStrategyRunner:
             # -----------------------------------------------------------------
             if rc == 3:
                 state_values, orders = venue.read_orders_snapshot()
-
-                self.strategy_state.update_account(
-                    instrument=instrument,
-                    position=state_values.position,
-                    balance=state_values.balance,
-                    fee=state_values.fee,
-                    trading_volume=state_values.trading_volume,
-                    trading_value=state_values.trading_value,
-                    num_trades=state_values.num_trades,
-                )
-                self.strategy_state.ingest_order_snapshots(
-                    instrument,
-                    orders.values(),
-                )
-
-                constraints = self.risk.build_constraints(sim_now_ns)
-                raw_intents.extend(
-                    self.strategy.on_order_update(
-                        self.strategy_state,
-                        self.engine_cfg,
-                        constraints,
+                if getattr(self, "_enable_core_step_order_feedback_dispatch", False):
+                    constraints = self.risk.build_constraints(sim_now_ns)
+                    order_feedback_event = self._build_order_execution_feedback_event(
+                        instrument=instrument,
+                        sim_now_ns=sim_now_ns,
+                        state_values=state_values,
+                        order_snapshots=orders,
                     )
-                )
+                    order_feedback_step_result = (
+                        self._process_canonical_order_feedback_event(
+                            order_feedback_event,
+                            constraints=constraints,
+                        )
+                    )
+                else:
+                    self.strategy_state.update_account(
+                        instrument=instrument,
+                        position=state_values.position,
+                        balance=state_values.balance,
+                        fee=state_values.fee,
+                        trading_volume=state_values.trading_volume,
+                        trading_value=state_values.trading_value,
+                        num_trades=state_values.num_trades,
+                    )
+                    self.strategy_state.ingest_order_snapshots(
+                        instrument,
+                        orders.values(),
+                    )
+
+                    constraints = self.risk.build_constraints(sim_now_ns)
+                    raw_intents.extend(
+                        self.strategy.on_order_update(
+                            self.strategy_state,
+                            self.engine_cfg,
+                            constraints,
+                        )
+                    )
 
             # -----------------------------------------------------------------
             # Queue flush
@@ -791,6 +923,19 @@ class HftStrategyRunner:
                 else:
                     self._apply_control_scheduling_obligation(
                         market_step_result.control_scheduling_obligation
+                    )
+
+            if order_feedback_step_result is not None:
+                self._last_core_step_execution_errors = self._dispatch_accepted_intents(
+                    list(order_feedback_step_result.dispatchable_intents),
+                    execution,
+                    sim_now_ns=sim_now_ns,
+                )
+                if order_feedback_step_result.control_scheduling_obligation is None:
+                    self._clear_pending_control_scheduling_obligation()
+                else:
+                    self._apply_control_scheduling_obligation(
+                        order_feedback_step_result.control_scheduling_obligation
                     )
 
             # -----------------------------------------------------------------
