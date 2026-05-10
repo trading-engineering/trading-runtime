@@ -1236,6 +1236,228 @@ def test_order_update_path_remains_legacy_when_market_core_step_mode_enabled() -
     assert risk_calls[0] == [order_update_intent]
 
 
+def test_order_update_core_step_mode_does_not_execute_legacy_rc3_state_mutation_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guardrail: rc3 core-step flag must not call legacy update_account/ingest_order_snapshots directly."""
+    dispatchable = _cancel_intent(ts_ns_local=2)
+    legacy_calls: list[str] = []
+
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_order_feedback_dispatch=True,
+    )
+
+    def _legacy_update_account(*args: object, **kwargs: object) -> None:
+        _ = (args, kwargs)
+        legacy_calls.append("update_account")
+
+    def _legacy_ingest_order_snapshots(*args: object, **kwargs: object) -> None:
+        _ = (args, kwargs)
+        legacy_calls.append("ingest_order_snapshots")
+
+    monkeypatch.setattr(runner.strategy_state, "update_account", _legacy_update_account)
+    monkeypatch.setattr(
+        runner.strategy_state,
+        "ingest_order_snapshots",
+        _legacy_ingest_order_snapshots,
+    )
+
+    def _spy_run_core_step(*args: object, **kwargs: object) -> CoreStepResult:
+        # Important: this stub does not reduce the event, so any legacy-branch
+        # update_account/ingest_order_snapshots calls would be runtime-direct.
+        return CoreStepResult(dispatchable_intents=(dispatchable,))
+
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", _spy_run_core_step)
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("rc3 core-step mode must not call runtime risk gate")
+        ),
+    )
+
+    venue = _StubVenue(
+        rc_sequence=[0, 3, 1],
+        ts_sequence=[1, 2, 3],
+        state_values=SimpleNamespace(
+            position=0.0,
+            balance=1000.0,
+            fee=0.0,
+            trading_volume=0.0,
+            trading_value=0.0,
+            num_trades=0,
+        ),
+        orders={},
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert legacy_calls == []
+
+
+def test_order_update_core_step_mode_does_not_execute_legacy_finalize_gate_decision_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guardrail: rc3 core-step flag must not reach _finalize_decision_effects via raw_intents gate."""
+    dispatchable = _cancel_intent(ts_ns_local=2)
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_order_feedback_dispatch=True,
+    )
+
+    monkeypatch.setattr(
+        runner,
+        "_finalize_decision_effects",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("rc3 core-step mode must not call legacy _finalize_decision_effects")
+        ),
+    )
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", lambda *a, **k: CoreStepResult(dispatchable_intents=(dispatchable,)))
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("rc3 core-step mode must not call runtime risk gate")
+        ),
+    )
+
+    venue = _StubVenue(
+        rc_sequence=[0, 3, 1],
+        ts_sequence=[1, 2, 3],
+        state_values=SimpleNamespace(
+            position=0.0,
+            balance=1000.0,
+            fee=0.0,
+            trading_volume=0.0,
+            trading_value=0.0,
+            num_trades=0,
+        ),
+        orders={},
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+
+def test_order_update_core_step_mode_does_not_call_strategy_on_order_update_directly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guardrail: rc3 core-step flag must not call Strategy.on_order_update from legacy branch."""
+    dispatchable = _cancel_intent(ts_ns_local=2)
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_NoopStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_order_feedback_dispatch=True,
+    )
+
+    # If the legacy rc3 else-branch executes, it will call strategy.on_order_update directly.
+    monkeypatch.setattr(
+        runner.strategy,
+        "on_order_update",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("legacy rc3 branch must not call strategy.on_order_update when flag is on")
+        ),
+    )
+
+    # Stub run_core_step so evaluator is not invoked (it would call on_order_update by design).
+    monkeypatch.setattr(strategy_runner_module, "run_core_step", lambda *a, **k: CoreStepResult(dispatchable_intents=(dispatchable,)))
+    monkeypatch.setattr(
+        runner.risk,
+        "decide_intents",
+        lambda **_: (_ for _ in ()).throw(
+            AssertionError("rc3 core-step mode must not call runtime risk gate")
+        ),
+    )
+
+    venue = _StubVenue(
+        rc_sequence=[0, 3, 1],
+        ts_sequence=[1, 2, 3],
+        state_values=SimpleNamespace(
+            position=0.0,
+            balance=1000.0,
+            fee=0.0,
+            trading_volume=0.0,
+            trading_value=0.0,
+            num_trades=0,
+        ),
+        orders={},
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+
+def test_order_update_legacy_flag_off_still_calls_state_and_strategy_and_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: when flag is off, rc3 retains legacy state mutation + strategy hook + risk gate."""
+    generated = _new_intent(ts_ns_local=2)
+    seen: list[str] = []
+
+    class _LegacySpyStrategy(Strategy):
+        def on_feed(self, state: Any, event: Any, engine_cfg: Any, constraints: Any) -> list[Any]:
+            _ = (state, event, engine_cfg, constraints)
+            return []
+
+        def on_order_update(self, state: Any, engine_cfg: Any, constraints: Any) -> list[Any]:
+            _ = (state, engine_cfg, constraints)
+            seen.append("strategy.on_order_update")
+            return [generated]
+
+        def on_risk_decision(self, decision: Any) -> None:
+            _ = decision
+
+    runner = HftStrategyRunner(
+        engine_cfg=_engine_cfg(),
+        strategy=_LegacySpyStrategy(),
+        risk_cfg=_risk_cfg(),
+        core_cfg=_core_cfg(),
+        enable_core_step_order_feedback_dispatch=False,
+    )
+
+    def _spy_update_account(*args: object, **kwargs: object) -> None:
+        _ = (args, kwargs)
+        seen.append("state.update_account")
+
+    def _spy_ingest_order_snapshots(*args: object, **kwargs: object) -> None:
+        _ = (args, kwargs)
+        seen.append("state.ingest_order_snapshots")
+
+    monkeypatch.setattr(runner.strategy_state, "update_account", _spy_update_account)
+    monkeypatch.setattr(runner.strategy_state, "ingest_order_snapshots", _spy_ingest_order_snapshots)
+
+    def _spy_decide_intents(**kwargs: object) -> GateDecision:
+        _ = kwargs
+        seen.append("risk.decide_intents")
+        return _decision_for([])
+
+    runner.risk.decide_intents = _spy_decide_intents  # type: ignore[method-assign]
+
+    venue = _StubVenue(
+        rc_sequence=[0, 3, 1],
+        ts_sequence=[1, 2, 3],
+        state_values=SimpleNamespace(
+            position=0.0,
+            balance=1000.0,
+            fee=0.0,
+            trading_volume=0.0,
+            trading_value=0.0,
+            num_trades=0,
+        ),
+        orders={},
+    )
+    runner.run(venue=venue, execution=_NoopExecution(), recorder=_RecorderWrapper())
+
+    assert "state.update_account" in seen
+    assert "state.ingest_order_snapshots" in seen
+    assert "strategy.on_order_update" in seen
+    assert "risk.decide_intents" in seen
+
+
 def test_order_update_core_step_mode_routes_rc3_through_canonical_event_and_dispatchables(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
