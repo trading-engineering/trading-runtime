@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 from tradingchassis_core.core.risk.risk_config import RiskConfig
-from tradingchassis_core.strategies.strategy_config import StrategyConfig
 
 from core_runtime.backtest.engine.hft_engine import (
     HftBacktestConfig,
@@ -26,6 +25,7 @@ from core_runtime.backtest.runtime.context import SweepContext
 from core_runtime.backtest.runtime.core_configuration_mapper import (
     build_core_configuration_from_run_config,
 )
+from core_runtime.backtest.strategy_api import StrategyConfig
 
 
 class SweepMaterializer:
@@ -462,7 +462,7 @@ def main() -> None:
     materializer.materialize(ctx)
 
     engine_cfg = HftEngineConfig(**ctx.parameters["engine"])
-    strategy_cfg = StrategyConfig(**ctx.parameters["strategy"])
+    strategy_cfg = StrategyConfig.from_mapping(ctx.parameters["strategy"])
     risk_cfg = RiskConfig(**ctx.parameters["risk"])
 
     runner = SweepEngineRunner(

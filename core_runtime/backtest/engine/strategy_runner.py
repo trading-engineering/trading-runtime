@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import logging
-from collections import deque
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from tradingchassis_core import (
-    ControlTimeQueueReevaluationContext,
     CoreExecutionControlApplyContext,
     CorePolicyAdmissionContext,
     run_core_step,
@@ -28,7 +27,6 @@ from tradingchassis_core.core.domain.types import (
     MarketEvent,
     NewOrderIntent,
     OrderExecutionFeedbackEvent,
-    OrderExecutionFeedbackSnapshot,
     OrderIntent,
     OrderSubmittedEvent,
     Price,
@@ -36,24 +34,19 @@ from tradingchassis_core.core.domain.types import (
 )
 from tradingchassis_core.core.events.event_bus import EventBus
 from tradingchassis_core.core.events.sinks.sink_logging import LoggingEventSink
+from tradingchassis_core.core.execution_control.execution_control import ExecutionControl
 from tradingchassis_core.core.execution_control.types import (
     ControlSchedulingObligation,
 )
-from tradingchassis_core.core.ports.venue_adapter import VenueAdapter
 from tradingchassis_core.core.risk.risk_config import RiskConfig
-from tradingchassis_core.core.risk.risk_engine import (
-    GateDecision,
-    RejectedIntent,
-    RiskEngine,
-)
+from tradingchassis_core.core.risk.risk_engine import RiskEngine
 
-from core_runtime.backtest.adapters.protocols import OrderSubmissionGateway
+from core_runtime.backtest.adapters.protocols import OrderSubmissionGateway, VenueAdapter
 from core_runtime.backtest.engine.event_stream_cursor import EventStreamCursor
 from core_runtime.backtest.events.sinks.file_recorder import FileRecorderSink
+from core_runtime.backtest.strategy_api import Strategy
 
 if TYPE_CHECKING:
-    from tradingchassis_core.strategies.base import Strategy
-
     from core_runtime.backtest.engine.hft_engine import HftEngineConfig
 
 
@@ -109,6 +102,33 @@ class _LegacyOnOrderUpdateStrategyEvaluator:
         )
 
 
+class _LegacyWakeupStrategyEvaluator:
+    """Runtime-local adapter for one strategy evaluation per wakeup reduction."""
+
+    def __init__(
+        self,
+        *,
+        strategy: Strategy,
+        engine_cfg: HftEngineConfig,
+        constraints: object,
+        market_event: MarketEvent,
+    ) -> None:
+        self._strategy = strategy
+        self._engine_cfg = engine_cfg
+        self._constraints = constraints
+        self._market_event = market_event
+
+    def evaluate(self, context: object) -> tuple[OrderIntent, ...]:
+        return tuple(
+            self._strategy.on_feed(
+                context.state,
+                self._market_event,
+                self._engine_cfg,
+                self._constraints,
+            )
+        )
+
+
 class HftStrategyRunner:
     """Strategy runner for HFT backtests.
 
@@ -125,10 +145,10 @@ class HftStrategyRunner:
         strategy: Strategy,
         risk_cfg: RiskConfig,
         core_cfg: CoreConfiguration,
-        enable_core_step_market_dispatch: bool = False,
-        enable_core_step_control_time_dispatch: bool = False,
+        enable_core_step_market_dispatch: bool = True,
+        enable_core_step_control_time_dispatch: bool = True,
         enable_core_step_wakeup_collapse: bool = False,
-        enable_core_step_order_feedback_dispatch: bool = False,
+        enable_core_step_order_feedback_dispatch: bool = True,
     ) -> None:
         self.engine_cfg = engine_cfg
         self.strategy = strategy
@@ -141,6 +161,16 @@ class HftStrategyRunner:
         self._enable_core_step_order_feedback_dispatch = (
             enable_core_step_order_feedback_dispatch
         )
+        if not self._enable_core_step_market_dispatch:
+            raise ValueError("clean-core runtime requires enable_core_step_market_dispatch=True")
+        if not self._enable_core_step_control_time_dispatch:
+            raise ValueError(
+                "clean-core runtime requires enable_core_step_control_time_dispatch=True"
+            )
+        if not self._enable_core_step_order_feedback_dispatch:
+            raise ValueError(
+                "clean-core runtime requires enable_core_step_order_feedback_dispatch=True"
+            )
         if self._enable_core_step_wakeup_collapse and not self._enable_core_step_market_dispatch:
             raise ValueError(
                 "enable_core_step_wakeup_collapse=True requires "
@@ -165,8 +195,8 @@ class HftStrategyRunner:
 
         self.risk = RiskEngine(
             risk_cfg=risk_cfg,
-            event_bus=event_bus,
         )
+        self.execution_control = ExecutionControl()
 
         self._next_send_ts_ns_local: int | None = None
         self._event_stream_cursor = EventStreamCursor()
@@ -203,7 +233,6 @@ class HftStrategyRunner:
 
     def _close_event_bus(self) -> None:
         self.strategy_state._event_bus.close()
-        self.risk._event_bus.close()
 
     def _compute_timeout_ns(self, now_local_ns: int) -> int:
         """Compute wait timeout in nanoseconds."""
@@ -244,7 +273,7 @@ class HftStrategyRunner:
                 now_ts_ns_local=now_ts_ns_local,
             ),
             CoreExecutionControlApplyContext(
-                execution_control=self.risk.execution_control,
+                execution_control=self.execution_control,
                 now_ts_ns_local=now_ts_ns_local,
                 max_orders_per_sec=max_orders_per_sec,
                 max_cancels_per_sec=max_cancels_per_sec,
@@ -263,33 +292,23 @@ class HftStrategyRunner:
             position=position,
             event=market_event,
         )
-        policy_admission_context = None
-        execution_control_apply_context = None
-        if getattr(self, "_enable_core_step_market_dispatch", False):
-            (
-                policy_admission_context,
-                execution_control_apply_context,
-            ) = self._build_policy_and_apply_context(
-                now_ts_ns_local=market_event.ts_ns_local,
-            )
-        run_core_step_kwargs: dict[str, object] = {
-            "configuration": self._core_cfg,
-            "strategy_evaluator": _LegacyOnFeedStrategyEvaluator(
+        (
+            policy_admission_context,
+            execution_control_apply_context,
+        ) = self._build_policy_and_apply_context(
+            now_ts_ns_local=market_event.ts_ns_local,
+        )
+        result = run_core_step(
+            self.strategy_state,
+            entry,
+            configuration=self._core_cfg,
+            strategy_evaluator=_LegacyOnFeedStrategyEvaluator(
                 strategy=self.strategy,
                 engine_cfg=self.engine_cfg,
                 constraints=constraints,
             ),
-        }
-        if policy_admission_context is not None:
-            run_core_step_kwargs["policy_admission_context"] = policy_admission_context
-        if execution_control_apply_context is not None:
-            run_core_step_kwargs["execution_control_apply_context"] = (
-                execution_control_apply_context
-            )
-        result = run_core_step(
-            self.strategy_state,
-            entry,
-            **run_core_step_kwargs,
+            policy_admission_context=policy_admission_context,
+            execution_control_apply_context=execution_control_apply_context,
         )
         self._event_stream_cursor.commit_success(position)
         return result
@@ -315,48 +334,13 @@ class HftStrategyRunner:
         )
         self._process_canonical_event(order_submitted_event)
 
-    @staticmethod
-    def _iter_order_snapshot_rows(order_snapshots: object) -> list[object]:
-        if hasattr(order_snapshots, "values"):
-            values = order_snapshots.values
-            if callable(values):
-                return list(values())
-        if hasattr(order_snapshots, "has_next") and hasattr(order_snapshots, "get"):
-            rows: list[object] = []
-            while order_snapshots.has_next():
-                row = order_snapshots.get()
-                if row is None:
-                    break
-                rows.append(row)
-            return rows
-        return list(order_snapshots)
-
     def _build_order_execution_feedback_event(
         self,
         *,
         instrument: str,
         sim_now_ns: int,
         state_values: object,
-        order_snapshots: object,
     ) -> OrderExecutionFeedbackEvent:
-        snapshots = tuple(
-            OrderExecutionFeedbackSnapshot(
-                order_id=str(row.order_id),
-                order_type=int(row.order_type),
-                side=int(row.side),
-                time_in_force=int(row.time_in_force),
-                status=int(row.status),
-                req=int(row.req),
-                price=float(row.price),
-                qty=float(row.qty),
-                exec_price=float(row.exec_price),
-                exec_qty=float(row.exec_qty),
-                leaves_qty=float(row.leaves_qty),
-                ts_ns_exch=int(row.exch_timestamp),
-                ts_ns_local=int(row.local_timestamp),
-            )
-            for row in self._iter_order_snapshot_rows(order_snapshots)
-        )
         return OrderExecutionFeedbackEvent(
             ts_ns_local_feedback=sim_now_ns,
             instrument=instrument,
@@ -366,7 +350,6 @@ class HftStrategyRunner:
             trading_volume=float(state_values.trading_volume),
             trading_value=float(state_values.trading_value),
             num_trades=int(state_values.num_trades),
-            order_snapshots=snapshots,
             runtime_correlation=None,
         )
 
@@ -405,7 +388,6 @@ class HftStrategyRunner:
     def _process_canonical_control_time_event(
         self,
         *,
-        instrument: str,
         now_ts_ns_local: int,
         sim_now_ns: int,
         scheduled_deadline_ns: int,
@@ -421,34 +403,18 @@ class HftStrategyRunner:
             position=position,
             event=control_time_event,
         )
-        run_core_step_kwargs: dict[str, object] = {
-            "configuration": self._core_cfg,
-        }
-        if getattr(self, "_enable_core_step_control_time_dispatch", False):
-            (
-                policy_admission_context,
-                execution_control_apply_context,
-            ) = self._build_policy_and_apply_context(
-                now_ts_ns_local=now_ts_ns_local,
-            )
-            run_core_step_kwargs["policy_admission_context"] = (
-                policy_admission_context
-            )
-            run_core_step_kwargs["execution_control_apply_context"] = (
-                execution_control_apply_context
-            )
-        else:
-            run_core_step_kwargs["control_time_queue_context"] = (
-                ControlTimeQueueReevaluationContext(
-                    risk_engine=self.risk,
-                    instrument=instrument,
-                    now_ts_ns_local=now_ts_ns_local,
-                )
-            )
+        (
+            policy_admission_context,
+            execution_control_apply_context,
+        ) = self._build_policy_and_apply_context(
+            now_ts_ns_local=now_ts_ns_local,
+        )
         result = run_core_step(
             self.strategy_state,
             entry,
-            **run_core_step_kwargs,
+            configuration=self._core_cfg,
+            policy_admission_context=policy_admission_context,
+            execution_control_apply_context=execution_control_apply_context,
         )
         self._event_stream_cursor.commit_success(position)
         return result
@@ -492,21 +458,6 @@ class HftStrategyRunner:
         for entry in entries:
             self._event_stream_cursor.commit_success(entry.position)
 
-    @staticmethod
-    def _select_effective_control_scheduling_obligation(
-        decision: GateDecision,
-    ) -> ControlSchedulingObligation | None:
-        obligations = decision.control_scheduling_obligations
-        if not obligations:
-            return None
-        return min(
-            obligations,
-            key=lambda obligation: (
-                obligation.due_ts_ns_local,
-                obligation.obligation_key,
-            ),
-        )
-
     def _clear_pending_control_scheduling_obligation(self) -> None:
         self._pending_control_scheduling_obligation = None
         self._next_send_ts_ns_local = None
@@ -517,21 +468,6 @@ class HftStrategyRunner:
         pending = self._pending_control_scheduling_obligation
         self._clear_pending_control_scheduling_obligation()
         return pending
-
-    def _apply_control_scheduling_decision(
-        self,
-        decision: GateDecision,
-    ) -> None:
-        selected = self._select_effective_control_scheduling_obligation(decision)
-        if selected is None:
-            self._pending_control_scheduling_obligation = None
-            self._next_send_ts_ns_local = decision.next_send_ts_ns_local
-            return
-        if self._pending_control_scheduling_obligation == selected:
-            self._next_send_ts_ns_local = selected.due_ts_ns_local
-            return
-        self._pending_control_scheduling_obligation = selected
-        self._next_send_ts_ns_local = selected.due_ts_ns_local
 
     def _apply_control_scheduling_obligation(
         self,
@@ -569,6 +505,12 @@ class HftStrategyRunner:
                     it,
                     ts_ns_local_dispatch=sim_now_ns,
                 )
+                # Clean-Core runtime treats OrderSubmittedEvent as the successful
+                # NEW dispatch acknowledgment boundary. Calling mark_intent_sent
+                # here would recreate NEW inflight state immediately after the
+                # submitted reducer clears it and can cause non-terminating
+                # inflight-only loops near end-of-data.
+                continue
             self.strategy_state.mark_intent_sent(
                 it.instrument,
                 it.client_order_id,
@@ -576,40 +518,6 @@ class HftStrategyRunner:
             )
 
         return execution_errors
-
-    def _finalize_decision_effects(
-        self,
-        *,
-        decision: GateDecision,
-        execution: OrderSubmissionGateway,
-        sim_now_ns: int,
-        instrument: str,
-    ) -> None:
-        execution_errors = self._dispatch_accepted_intents(
-            decision.accepted_now,
-            execution,
-            sim_now_ns=sim_now_ns,
-        )
-
-        if execution_errors:
-            for it, reason in execution_errors:
-                decision.execution_rejected.append(
-                    RejectedIntent(it, reason)
-                )
-
-        self.strategy.on_risk_decision(decision)
-        self._apply_control_scheduling_decision(decision)
-
-        # If there are queued intents but the gate did not provide a next_send_ts_ns_local,
-        # wake up at the next second boundary to ensure progress.
-        if self._next_send_ts_ns_local is None:
-            queue = self.strategy_state.queued_intents.setdefault(
-                instrument,
-                deque(),
-            )
-            if queue:
-                sec = sim_now_ns // 1_000_000_000
-                self._next_send_ts_ns_local = (sec + 1) * 1_000_000_000
 
     def run(
         self,
@@ -619,6 +527,37 @@ class HftStrategyRunner:
     ) -> None:
         """Run the backtest loop."""
         # pylint: disable=too-many-locals,too-many-branches,too-many-statements
+        debug_loop = os.getenv("TRADINGCHASSIS_DEBUG_LOOP", "").strip() in {
+            "1",
+            "true",
+            "TRUE",
+            "yes",
+            "YES",
+        }
+        debug_max_iterations_raw = os.getenv("TRADINGCHASSIS_DEBUG_MAX_ITERATIONS", "").strip()
+        debug_max_iterations: int | None = None
+        if debug_max_iterations_raw:
+            parsed = int(debug_max_iterations_raw)
+            if parsed <= 0:
+                raise ValueError("TRADINGCHASSIS_DEBUG_MAX_ITERATIONS must be > 0")
+            debug_max_iterations = parsed
+        debug_every_raw = os.getenv("TRADINGCHASSIS_DEBUG_LOOP_EVERY", "").strip()
+        debug_every = 100
+        if debug_every_raw:
+            parsed_every = int(debug_every_raw)
+            if parsed_every <= 0:
+                raise ValueError("TRADINGCHASSIS_DEBUG_LOOP_EVERY must be > 0")
+            debug_every = parsed_every
+        debug_logger = logging.getLogger("core_runtime.backtest.loop")
+        loop_iteration = 0
+        last_rc: int | None = None
+        last_timeout_ns: int | None = None
+        last_sim_ts_before_wait: int | None = None
+        last_sim_ts_after_wait: int | None = None
+        no_progress_iterations = 0
+        recorder_exhausted_count = 0
+        end_signal_count = 0
+        last_debug_signature: tuple[object, ...] | None = None
 
         instrument = self.engine_cfg.instrument
         # Initialize hftbacktest engine
@@ -629,22 +568,68 @@ class HftStrategyRunner:
         sim_now_ns = self.strategy_state.sim_ts_ns_local
 
         while True:
-            timeout_ns = self._compute_timeout_ns(self.strategy_state.sim_ts_ns_local)
+            loop_iteration += 1
+            if (
+                debug_max_iterations is not None
+                and loop_iteration > debug_max_iterations
+            ):
+                pending_due = (
+                    None
+                    if self._pending_control_scheduling_obligation is None
+                    else self._pending_control_scheduling_obligation.due_ts_ns_local
+                )
+                pending_reason = (
+                    None
+                    if self._pending_control_scheduling_obligation is None
+                    else self._pending_control_scheduling_obligation.reason
+                )
+                queued_count = sum(
+                    len(queue)
+                    for queue in self.strategy_state.queued_intents.values()
+                )
+                inflight_count = sum(
+                    len(bucket)
+                    for bucket in self.strategy_state.inflight.values()
+                )
+                raise RuntimeError(
+                    "TRADINGCHASSIS_DEBUG_MAX_ITERATIONS exceeded in HftStrategyRunner.run: "
+                    f"iteration={loop_iteration}, sim_ts_ns_local={self.strategy_state.sim_ts_ns_local}, "
+                    f"pending_due={pending_due}, pending_reason={pending_reason}, "
+                    f"last_injected_control_deadline_ns={self._last_injected_control_deadline_ns}, "
+                    f"queued_count={queued_count}, inflight_count={inflight_count}, "
+                    f"last_rc={last_rc}, last_timeout_ns={last_timeout_ns}, "
+                    f"sim_ts_before_wait={last_sim_ts_before_wait}, sim_ts_after_wait={last_sim_ts_after_wait}, "
+                    f"no_progress_iterations={no_progress_iterations}, "
+                    f"recorder_exhausted_count={recorder_exhausted_count}, end_signal_count={end_signal_count}"
+                )
+
+            sim_ts_before_wait = self.strategy_state.sim_ts_ns_local
+            timeout_ns = self._compute_timeout_ns(sim_ts_before_wait)
             rc = venue.wait_next(timeout_ns=timeout_ns, include_order_resp=True)
+            last_rc = rc
+            last_timeout_ns = timeout_ns
+            last_sim_ts_before_wait = sim_ts_before_wait
 
             if rc == 1:
+                end_signal_count += 1
                 self._close_event_bus()
                 break
 
             observed_local_ns = venue.current_timestamp_ns()
             self.strategy_state.update_timestamp(observed_local_ns)
             sim_now_ns = self.strategy_state.sim_ts_ns_local
+            last_sim_ts_after_wait = sim_now_ns
+            venue_progressed = sim_now_ns > sim_ts_before_wait
 
-            raw_intents: list[OrderIntent] = []
             market_step_result: CoreStepResult | None = None
             control_step_result: CoreStepResult | None = None
             order_feedback_step_result: CoreStepResult | None = None
             market_event: MarketEvent | None = None
+            market_processed = False
+            order_feedback_processed = False
+            control_time_injected = False
+            dispatch_attempted_count = 0
+            stale_obligation_cleared = False
 
             # -----------------------------------------------------------------
             # Market update
@@ -729,51 +714,25 @@ class HftStrategyRunner:
                         market_event,
                         constraints=constraints,
                     )
-                    if not getattr(self, "_enable_core_step_market_dispatch", False):
-                        raw_intents.extend(market_step_result.generated_intents)
+                    market_processed = True
 
             # -----------------------------------------------------------------
             # Order / account update
             # -----------------------------------------------------------------
             if rc == 3:
                 state_values, orders = venue.read_orders_snapshot()
-                if getattr(self, "_enable_core_step_order_feedback_dispatch", False):
-                    constraints = self.risk.build_constraints(sim_now_ns)
-                    order_feedback_event = self._build_order_execution_feedback_event(
-                        instrument=instrument,
-                        sim_now_ns=sim_now_ns,
-                        state_values=state_values,
-                        order_snapshots=orders,
-                    )
-                    order_feedback_step_result = (
-                        self._process_canonical_order_feedback_event(
-                            order_feedback_event,
-                            constraints=constraints,
-                        )
-                    )
-                else:
-                    self.strategy_state.update_account(
-                        instrument=instrument,
-                        position=state_values.position,
-                        balance=state_values.balance,
-                        fee=state_values.fee,
-                        trading_volume=state_values.trading_volume,
-                        trading_value=state_values.trading_value,
-                        num_trades=state_values.num_trades,
-                    )
-                    self.strategy_state.ingest_order_snapshots(
-                        instrument,
-                        orders.values(),
-                    )
-
-                    constraints = self.risk.build_constraints(sim_now_ns)
-                    raw_intents.extend(
-                        self.strategy.on_order_update(
-                            self.strategy_state,
-                            self.engine_cfg,
-                            constraints,
-                        )
-                    )
+                _ = orders  # runtime keeps raw snapshot ownership; core receives canonical feedback
+                constraints = self.risk.build_constraints(sim_now_ns)
+                order_feedback_event = self._build_order_execution_feedback_event(
+                    instrument=instrument,
+                    sim_now_ns=sim_now_ns,
+                    state_values=state_values,
+                )
+                order_feedback_step_result = self._process_canonical_order_feedback_event(
+                    order_feedback_event,
+                    constraints=constraints,
+                )
+                order_feedback_processed = True
 
             # -----------------------------------------------------------------
             # Queue flush
@@ -787,6 +746,19 @@ class HftStrategyRunner:
                 # Transitional compatibility for scalar-only decisions.
                 scheduled_deadline_ns = self._next_send_ts_ns_local
             if (
+                scheduling_obligation is not None
+                and scheduled_deadline_ns is not None
+                and sim_now_ns >= scheduled_deadline_ns
+                and scheduled_deadline_ns == self._last_injected_control_deadline_ns
+            ):
+                # The same control deadline has already been realized once.
+                # Keeping it pending would force timeout_ns=0 and can spin forever
+                # when venue time no longer advances near end-of-data.
+                self._consume_pending_control_scheduling_obligation()
+                scheduling_obligation = None
+                scheduled_deadline_ns = None
+                stale_obligation_cleared = True
+            if (
                 scheduled_deadline_ns is not None
                 and sim_now_ns >= scheduled_deadline_ns
             ):
@@ -798,12 +770,12 @@ class HftStrategyRunner:
                         pass
                     else:
                         control_step_result = self._process_canonical_control_time_event(
-                            instrument=instrument,
                             now_ts_ns_local=sim_now_ns,
                             sim_now_ns=sim_now_ns,
                             scheduled_deadline_ns=scheduled_deadline_ns,
                             scheduling_obligation=scheduling_obligation,
                         )
+                        control_time_injected = True
                         self._last_injected_control_deadline_ns = scheduled_deadline_ns
                         if scheduling_obligation is not None:
                             self._consume_pending_control_scheduling_obligation()
@@ -834,10 +806,11 @@ class HftStrategyRunner:
                     collapse_constraints = self.risk.build_constraints(sim_now_ns)
                     strategy_evaluator = None
                     if market_event is not None:
-                        strategy_evaluator = _LegacyOnFeedStrategyEvaluator(
+                        strategy_evaluator = _LegacyWakeupStrategyEvaluator(
                             strategy=self.strategy,
                             engine_cfg=self.engine_cfg,
                             constraints=collapse_constraints,
+                            market_event=market_event,
                         )
                     (
                         policy_admission_context,
@@ -849,9 +822,8 @@ class HftStrategyRunner:
                         self.strategy_state,
                         wakeup_entries,
                         configuration=self._core_cfg,
-                        strategy_evaluator=strategy_evaluator,
-                        strategy_event_filter=lambda event: isinstance(event, MarketEvent),
-                        snapshot_instrument=instrument,
+                        wakeup_strategy_evaluator=strategy_evaluator,
+                        queued_instrument=instrument,
                         policy_admission_context=policy_admission_context,
                         execution_control_apply_context=execution_control_apply_context,
                     )
@@ -867,6 +839,7 @@ class HftStrategyRunner:
                         execution,
                         sim_now_ns=sim_now_ns,
                     )
+                    dispatch_attempted_count += len(wakeup_result.dispatchable_intents)
                     if wakeup_result.control_scheduling_obligation is None:
                         self._clear_pending_control_scheduling_obligation()
                     else:
@@ -874,50 +847,31 @@ class HftStrategyRunner:
                             wakeup_result.control_scheduling_obligation
                         )
             elif control_step_result is not None:
-                if getattr(self, "_enable_core_step_control_time_dispatch", False):
-                    self._last_core_step_execution_errors = (
-                        self._dispatch_accepted_intents(
-                            list(control_step_result.dispatchable_intents),
-                            execution,
-                            sim_now_ns=sim_now_ns,
-                        )
+                self._last_core_step_execution_errors = (
+                    self._dispatch_accepted_intents(
+                        list(control_step_result.dispatchable_intents),
+                        execution,
+                        sim_now_ns=sim_now_ns,
                     )
-                    if control_step_result.control_scheduling_obligation is None:
-                        self._clear_pending_control_scheduling_obligation()
-                    else:
-                        self._apply_control_scheduling_obligation(
-                            control_step_result.control_scheduling_obligation
-                        )
+                )
+                dispatch_attempted_count += len(control_step_result.dispatchable_intents)
+                if control_step_result.control_scheduling_obligation is None:
+                    self._clear_pending_control_scheduling_obligation()
                 else:
-                    if control_step_result.compat_gate_decision is not None:
-                        self._finalize_decision_effects(
-                            decision=control_step_result.compat_gate_decision,
-                            execution=execution,
-                            sim_now_ns=sim_now_ns,
-                            instrument=instrument,
-                        )
-                    elif control_step_result.dispatchable_intents:
-                        self._dispatch_accepted_intents(
-                            list(control_step_result.dispatchable_intents),
-                            execution,
-                            sim_now_ns=sim_now_ns,
-                        )
-                    elif control_step_result.control_scheduling_obligation is not None:
-                        self._apply_control_scheduling_obligation(
-                            control_step_result.control_scheduling_obligation
-                        )
+                    self._apply_control_scheduling_obligation(
+                        control_step_result.control_scheduling_obligation
+                    )
 
             if (
                 not getattr(self, "_enable_core_step_wakeup_collapse", False)
-                and
-                market_step_result is not None
-                and getattr(self, "_enable_core_step_market_dispatch", False)
+                and market_step_result is not None
             ):
                 self._last_core_step_execution_errors = self._dispatch_accepted_intents(
                     list(market_step_result.dispatchable_intents),
                     execution,
                     sim_now_ns=sim_now_ns,
                 )
+                dispatch_attempted_count += len(market_step_result.dispatchable_intents)
                 if market_step_result.control_scheduling_obligation is None:
                     self._clear_pending_control_scheduling_obligation()
                 else:
@@ -931,6 +885,7 @@ class HftStrategyRunner:
                     execution,
                     sim_now_ns=sim_now_ns,
                 )
+                dispatch_attempted_count += len(order_feedback_step_result.dispatchable_intents)
                 if order_feedback_step_result.control_scheduling_obligation is None:
                     self._clear_pending_control_scheduling_obligation()
                 else:
@@ -938,22 +893,155 @@ class HftStrategyRunner:
                         order_feedback_step_result.control_scheduling_obligation
                     )
 
-            # -----------------------------------------------------------------
-            # Gate + execution
-            # -----------------------------------------------------------------
-            if raw_intents:
-                combined = self._sort_intents_for_gate(raw_intents)
+            pending_due = (
+                None
+                if self._pending_control_scheduling_obligation is None
+                else self._pending_control_scheduling_obligation.due_ts_ns_local
+            )
+            pending_reason = (
+                None
+                if self._pending_control_scheduling_obligation is None
+                else self._pending_control_scheduling_obligation.reason
+            )
+            dispatchable_market = (
+                0
+                if market_step_result is None
+                else len(market_step_result.dispatchable_intents)
+            )
+            dispatchable_control = (
+                0
+                if control_step_result is None
+                else len(control_step_result.dispatchable_intents)
+            )
+            dispatchable_feedback = (
+                0
+                if order_feedback_step_result is None
+                else len(order_feedback_step_result.dispatchable_intents)
+            )
+            queued_count = sum(
+                len(queue)
+                for queue in self.strategy_state.queued_intents.values()
+            )
+            inflight_count = sum(
+                len(bucket)
+                for bucket in self.strategy_state.inflight.values()
+            )
+            queued_keys = tuple(
+                f"{instrument_key}:{queued.logical_key}"
+                for instrument_key in sorted(self.strategy_state.queued_intents)
+                for queued in list(self.strategy_state.queued_intents[instrument_key])[:3]
+            )[:6]
+            inflight_keys = tuple(
+                f"{instrument_key}:{client_order_id}"
+                for instrument_key in sorted(self.strategy_state.inflight)
+                for client_order_id in sorted(self.strategy_state.inflight[instrument_key])[:3]
+            )[:6]
+            event_processed = market_processed or order_feedback_processed or control_time_injected
+            has_pending_core_work = (
+                queued_count > 0
+                or inflight_count > 0
+                or self._pending_control_scheduling_obligation is not None
+                or self._next_send_ts_ns_local is not None
+            )
+            no_event_rc = rc not in {1, 2, 3}
+            no_progress_iteration = (
+                not venue_progressed
+                and not event_processed
+                and dispatch_attempted_count == 0
+                and no_event_rc
+            )
+            if no_progress_iteration:
+                no_progress_iterations += 1
+            else:
+                no_progress_iterations = 0
+            termination_no_work_no_progress = (
+                not has_pending_core_work
+                and no_progress_iteration
+            )
 
-                decision = self.risk.decide_intents(
-                    raw_intents=combined,
-                    state=self.strategy_state,
-                    now_ts_ns_local=sim_now_ns,
+            if debug_loop:
+                debug_signature = (
+                    rc,
+                    timeout_ns,
+                    sim_ts_before_wait,
+                    sim_now_ns,
+                    has_pending_core_work,
+                    queued_count,
+                    inflight_count,
+                    pending_due,
+                    pending_reason,
+                    market_processed,
+                    order_feedback_processed,
+                    control_time_injected,
+                    dispatch_attempted_count,
+                    termination_no_work_no_progress,
                 )
-                self._finalize_decision_effects(
-                    decision=decision,
-                    execution=execution,
-                    sim_now_ns=sim_now_ns,
-                    instrument=instrument,
+                should_emit_debug = (
+                    loop_iteration == 1
+                    or (loop_iteration % debug_every) == 0
+                    or debug_signature != last_debug_signature
+                    or termination_no_work_no_progress
                 )
+                if should_emit_debug:
+                    debug_logger.info(
+                    "loop=%s rc=%s sim_ts_ns_local=%s timeout_ns=%s market_processed=%s "
+                    "order_feedback_processed=%s control_time_injected=%s "
+                    "pending_due=%s pending_reason=%s stale_obligation_cleared=%s "
+                    "dispatchable_market=%s dispatchable_control=%s dispatchable_feedback=%s "
+                    "dispatch_attempted=%s queued_count=%s inflight_count=%s "
+                    "queued_keys=%s inflight_keys=%s sim_ts_before_wait=%s "
+                    "sim_ts_after_wait=%s no_progress_iterations=%s has_pending_core_work=%s "
+                    "termination_no_work_no_progress=%s no_event_rc=%s",
+                        loop_iteration,
+                        rc,
+                        sim_now_ns,
+                        timeout_ns,
+                        market_processed,
+                        order_feedback_processed,
+                        control_time_injected,
+                        pending_due,
+                        pending_reason,
+                        stale_obligation_cleared,
+                        dispatchable_market,
+                        dispatchable_control,
+                        dispatchable_feedback,
+                        dispatch_attempted_count,
+                        queued_count,
+                        inflight_count,
+                        queued_keys,
+                        inflight_keys,
+                        sim_ts_before_wait,
+                        sim_now_ns,
+                        no_progress_iterations,
+                        has_pending_core_work,
+                        termination_no_work_no_progress,
+                        no_event_rc,
+                    )
+                    print(
+                        "[TRADINGCHASSIS_DEBUG_LOOP] "
+                        f"loop={loop_iteration} rc={rc} timeout_ns={timeout_ns} "
+                        f"sim_ts_before_wait={sim_ts_before_wait} sim_ts_after_wait={sim_now_ns} "
+                        f"market_processed={market_processed} order_feedback_processed={order_feedback_processed} "
+                        f"control_time_injected={control_time_injected} dispatch_attempted={dispatch_attempted_count} "
+                        f"pending_due={pending_due} pending_reason={pending_reason} "
+                        f"queued_count={queued_count} inflight_count={inflight_count} "
+                        f"queued_keys={queued_keys} inflight_keys={inflight_keys} "
+                        f"no_progress_iterations={no_progress_iterations} "
+                        f"termination_no_work_no_progress={termination_no_work_no_progress} "
+                        f"no_event_rc={no_event_rc}",
+                        flush=True,
+                    )
+                last_debug_signature = debug_signature
 
-            venue.record(recorder)
+            if termination_no_work_no_progress:
+                if debug_loop:
+                    print(
+                        "[TRADINGCHASSIS_DEBUG_LOOP] breaking no-work/no-progress loop",
+                        flush=True,
+                    )
+                self._close_event_bus()
+                break
+
+            recorder_exhausted = bool(venue.record(recorder))
+            if recorder_exhausted:
+                recorder_exhausted_count += 1

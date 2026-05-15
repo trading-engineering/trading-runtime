@@ -87,7 +87,7 @@ python -m core_runtime.local.backtest --config core_runtime/local/bt_config_loca
 | Capability area | Status | Notes |
 | --- | --- | --- |
 | Canonical runtime paths | Active | `MarketEvent`, `OrderSubmittedEvent`, `ControlTimeEvent` |
-| Compatibility paths | Active | Post-submission order/fill progression via snapshots, `OrderStateEvent`, and `DerivedFillEvent` |
+| Runtime-local compatibility handling | Active | Raw venue order snapshots stay in runtime bookkeeping; Core receives canonical `OrderExecutionFeedbackEvent` (account-level only). |
 | Deferred capabilities | Deferred | Runtime `FillEvent` ingress, `ExecutionFeedbackRecordSource`, replay/storage/Event Stream persistence, `ProcessingContext` |
 
 ---
@@ -108,11 +108,11 @@ python -m core_runtime.local.backtest --config core_runtime/local/bt_config_loca
 
 ---
 
-## Compatibility paths
+## Runtime-local compatibility handling
 
-- snapshot-based post-submission progression
-- `OrderStateEvent`
-- `DerivedFillEvent`
+- snapshot-based post-submission bookkeeping remains runtime-local
+- Core ingestion uses account-level `OrderExecutionFeedbackEvent`
+- no snapshot row payload is pushed into Core
 
 ---
 

@@ -13,8 +13,7 @@ This is a docs-only slice:
 - it does not modify production code or tests;
 - it does not change runtime behavior;
 - it does not implement canonical `FillEvent` ingress;
-- it does not canonicalize `OrderStateEvent`;
-- it does not change `DerivedFillEvent` behavior;
+- it does not expand canonical account feedback beyond current `OrderExecutionFeedbackEvent`;
 - it does not change snapshot ingestion behavior;
 - it does not change reducers or event taxonomy;
 - it does not implement `ProcessingContext`;
@@ -80,8 +79,8 @@ they do not define production protocol signatures yet.
 | `VenueClock` (runtime clock boundary view) | provide adopted venue-local timestamp axis used by runtime timestamp update | runtime/internal only | mapped by `current_timestamp_ns()` wrapper | may expose richer venue receipt/event-time metadata while runtime keeps canonical ordering by `ProcessingPosition` | clock/timestamp must not be treated as `ProcessingOrder` authority |
 | `MarketInputSource` | provide market snapshots/deltas for canonical market mapping | canonical event capable | `read_market_snapshot()` mapped to canonical `MarketEvent` in runner | live adapters may map native book/trade feeds into canonical market events under runtime mapping | no hidden mutable snapshot promotion to canonical semantics outside boundary mapping |
 | `OrderSubmissionGateway` | submit/modify/cancel outbound intents and expose dispatch result boundary | canonical event capable (submission boundary), plus runtime/internal transport | `apply_intents(...)`; successful `new` dispatch leads to canonical `OrderSubmittedEvent` | live adapters may provide richer dispatch metadata while preserving current canonical submission boundary semantics | no post-submission execution authority from synchronous return codes |
-| `OrderSnapshotSource` | provide order snapshots for compatibility lifecycle materialization | compatibility projection only | `read_orders_snapshot()` -> `ingest_order_snapshots()` -> `OrderStateEvent` path | may remain compatibility sidecar where canonical execution feedback is unavailable | no `OrderStateEvent` canonicalization; no snapshot-to-canonical promotion |
-| `AccountSnapshotSource` | provide account snapshots for runtime/account views and compatibility projections | compatibility projection only / runtime/internal only | `state_values` adoption into `update_account(...)` | live adapters may offer richer account views without canonical authority by default | no implicit canonical account event expansion in this slice |
+| `OrderSnapshotSource` | provide raw order snapshots for runtime-local bookkeeping only | runtime/internal only | `read_orders_snapshot()` -> runtime-side bookkeeping (no Core snapshot reducer input) | may remain runtime sidecar where canonical execution feedback is unavailable | no snapshot row payload promotion into Core |
+| `AccountSnapshotSource` | provide account snapshots for canonical execution feedback mapping | canonical feedback input + runtime/internal support | `state_values` -> canonical `OrderExecutionFeedbackEvent` | live adapters may offer richer account views without changing Core boundaries | no implicit expansion beyond current canonical feedback event schema |
 | `ExecutionFeedbackRecordSource` | provide authoritative execution-feedback records for future canonical `FillEvent` mapping | optional future capability (canonical only after REFC/RAEFSC gates) | unsupported/ineligible today for hftbacktest integration | live adapters may satisfy this with native execution reports and deterministic source sequencing | no `FillEvent` ingress implementation here; no synthetic required-field authority |
 
 ---
@@ -93,14 +92,13 @@ they do not define production protocol signatures yet.
 - `MarketInputSource`: supported; canonical `MarketEvent` mapping path exists.
 - `OrderSubmissionGateway`: supported for successful `new` dispatch boundary via
   canonical `OrderSubmittedEvent` path.
-- `OrderSnapshotSource`: supported; remains compatibility-only.
-- `AccountSnapshotSource`: supported for compatibility/runtime-internal account
-  snapshot adoption.
+- `OrderSnapshotSource`: supported; remains runtime-internal bookkeeping only.
+- `AccountSnapshotSource`: supported for canonical account-level feedback mapping.
 - `VenueEventWaiter` + `VenueClock`: supported through existing wrappers.
 - `ExecutionFeedbackRecordSource`: unsupported/ineligible today.
 
-`VADN-07` - Compatibility authority remains frozen for post-submission lifecycle
-progression (`OrderStateEvent` / `DerivedFillEvent` path unchanged).
+`VADN-07` - Runtime keeps post-submission snapshot handling local; Core receives
+only canonical account-level execution feedback.
 
 ---
 
@@ -162,9 +160,9 @@ decided at runtime boundary mapping under existing contracts.
 
 `VADN-21` - No canonical `FillEvent` ingress implementation.
 
-`VADN-22` - No `OrderStateEvent` canonicalization.
+`VADN-22` - No snapshot row canonicalization into Core event inputs.
 
-`VADN-23` - No `DerivedFillEvent` behavior change.
+`VADN-23` - No canonical feedback schema expansion in this slice.
 
 `VADN-24` - No snapshot lifecycle rewrite.
 
