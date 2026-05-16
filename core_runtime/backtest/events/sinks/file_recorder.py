@@ -28,3 +28,4 @@ class FileRecorderSink:
         self._fh.flush()
         self._fh.close()
         self._closed = True
+

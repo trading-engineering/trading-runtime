@@ -20,6 +20,14 @@ class EventStreamCursor:
     def attempt_position(self) -> ProcessingPosition:
         return ProcessingPosition(index=self._next_index)
 
+    def attempt_positions(self, count: int) -> tuple[ProcessingPosition, ...]:
+        if count < 0:
+            raise ValueError("count must be >= 0")
+        return tuple(
+            ProcessingPosition(index=self._next_index + offset)
+            for offset in range(count)
+        )
+
     def commit_success(self, position: ProcessingPosition) -> None:
         if position.index != self._next_index:
             raise ValueError(

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from hftbacktest import ROIVectorMarketDepthBacktest
 
-from tradingchassis_core.core.ports.venue_adapter import VenueAdapter
+from core_runtime.backtest.adapters.protocols import VenueAdapter
 
 
 @dataclass(frozen=True)
@@ -43,7 +43,14 @@ class HftBacktestVenueAdapter(VenueAdapter):
             self.hbt.orders(self.asset_no),
         )
 
-    def record(self, recorder: Any) -> None:
+    def record(self, recorder: Any) -> bool:
         """Record the current backtest state using the given recorder."""
         # hftbacktest recorder is a thin wrapper exposing .recorder.record(hbt).
-        recorder.recorder.record(self.hbt)
+        try:
+            recorder.recorder.record(self.hbt)
+        except IndexError:
+            # hftbacktest Recorder has a fixed capacity and raises IndexError
+            # when the record buffer is exhausted. Runtime treats this as
+            # recording exhaustion and keeps the backtest loop alive.
+            return True
+        return False

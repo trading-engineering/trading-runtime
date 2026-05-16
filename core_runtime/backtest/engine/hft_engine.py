@@ -4,20 +4,11 @@ from __future__ import annotations
 
 import importlib
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
-
-from hftbacktest import (
-    BacktestAsset,
-    Recorder,
-    ROIVectorMarketDepthBacktest,
-)
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from tradingchassis_core.core.domain.configuration import CoreConfiguration
     from tradingchassis_core.core.risk.risk_config import RiskConfig
-
-from tradingchassis_core.strategies.base import Strategy
-from tradingchassis_core.strategies.strategy_config import StrategyConfig
 
 from core_runtime.backtest.adapters.execution import HftBacktestExecutionAdapter
 from core_runtime.backtest.adapters.venue import HftBacktestVenueAdapter
@@ -27,6 +18,7 @@ from core_runtime.backtest.engine.engine_base import (
     BacktestResult,
 )
 from core_runtime.backtest.engine.strategy_runner import HftStrategyRunner
+from core_runtime.backtest.strategy_api import Strategy, StrategyConfig
 
 
 # pylint: disable=too-many-instance-attributes
@@ -81,8 +73,10 @@ class HftBacktestConfig(BacktestConfig):
     core_cfg: CoreConfiguration
 
 
-def _build_backtester(engine_cfg: HftEngineConfig) -> ROIVectorMarketDepthBacktest:
+def _build_backtester(engine_cfg: HftEngineConfig) -> Any:
     """Create an ROIVectorMarketDepthBacktest from the engine configuration."""
+    from hftbacktest import BacktestAsset, ROIVectorMarketDepthBacktest
+
     asset = BacktestAsset()
 
     # For now we assume file paths. Later this can be replaced with an S3 resolver.
@@ -126,10 +120,13 @@ class HftBacktestEngine(BacktestEngine):
         module_path, class_name = class_path.split(":")
         module = importlib.import_module(module_path)
         cls = getattr(module, class_name)
-
-        if not issubclass(cls, Strategy):
+        if not callable(getattr(cls, "on_feed", None)):
             raise TypeError(
-                f"Loaded class {class_name} is not a subclass of Strategy."
+                f"Loaded class {class_name} does not implement on_feed."
+            )
+        if not callable(getattr(cls, "on_order_update", None)):
+            raise TypeError(
+                f"Loaded class {class_name} does not implement on_order_update."
             )
 
         return cls
@@ -150,6 +147,8 @@ class HftBacktestEngine(BacktestEngine):
         hbt = _build_backtester(engine_cfg)
 
         # 2) Prepare recorder (single asset, record every step)
+        from hftbacktest import Recorder
+
         recorder = Recorder(1, engine_cfg.max_steps)
 
         # 3) Build strategy and runner
@@ -182,6 +181,6 @@ class HftBacktestEngine(BacktestEngine):
                 "strategy_name": strategy_cfg.class_path,
                 "strategy_params": strategy_cfg.params,
                 "risk_scope": risk_cfg.scope,
-                "risk_params": risk_cfg.params,
+                "risk_params": risk_cfg.model_dump(),
             },
         )

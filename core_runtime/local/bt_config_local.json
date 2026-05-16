@@ -33,7 +33,7 @@
     "roi_ub": 80000,
 
     "stats_npz_path": ".runtime/local/results/stats.npz",
-    "event_bus_path": ".runtime/local/results/events.json"
+    "event_bus_path": ".runtime/local/results/events.jsonl"
   },
 
   "risk": {

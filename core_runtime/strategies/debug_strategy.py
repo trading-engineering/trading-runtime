@@ -3,13 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from tradingchassis_core import (
-        EngineContext,
-        GateDecision,
-        MarketEvent,
-        RiskConstraints,
-        StrategyState,
-    )
+    from tradingchassis_core import MarketEvent, RiskConstraints, StrategyState
 
 from tradingchassis_core import (
     NewOrderIntent,
@@ -18,9 +12,10 @@ from tradingchassis_core import (
     Quantity,
     ReplaceOrderIntent,
     SlotKey,
-    Strategy,
     stable_slot_order_id,
 )
+
+from core_runtime.backtest.strategy_api import Strategy
 
 _SLOT_NAMESPACE = "debug_strategy_v1"
 
@@ -52,7 +47,7 @@ class DebugStrategyV1(Strategy):
         self,
         state: StrategyState,
         event: MarketEvent,
-        engine_cfg: EngineContext,
+        engine_cfg: object,
         constraints: RiskConstraints,
     ) -> list[OrderIntent]:
         """Feed-triggered logic (rc=2). Inputs are read-only for Strategy, otherwise considered a bug."""
@@ -84,7 +79,11 @@ class DebugStrategyV1(Strategy):
         instrument = str(event.instrument)
 
         def is_slot_busy(client_order_id: str) -> bool:
-            return state.is_order_id_busy(instrument, client_order_id)
+            return (
+                state.has_working_order(instrument, client_order_id)
+                or state.has_inflight(instrument, client_order_id)
+                or state.has_queued_intent(instrument, client_order_id)
+            )
 
         def bid_price_for_level(level_index: int) -> float:
             if level_index < len(event.book.bids):
@@ -174,11 +173,12 @@ class DebugStrategyV1(Strategy):
     def on_order_update(
         self,
         state: StrategyState,
-        engine_cfg: EngineContext,
+        engine_cfg: object,
         constraints: RiskConstraints,
     ) -> list[OrderIntent]:
         """Order-update-triggered logic (rc=3). Inputs are read-only for Strategy, otherwise considered a bug."""
         return []
 
-    def on_risk_decision(self, decision: GateDecision) -> None:
-        self.intents_after_risk = decision.accepted_now
+    def on_risk_decision(self, decision: object) -> None:
+        accepted_now = getattr(decision, "accepted_now", [])
+        self.intents_after_risk = list(accepted_now)

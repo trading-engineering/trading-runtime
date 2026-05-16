@@ -12,6 +12,6 @@ spec:
       - name: image_tag
         value: "${IMAGE_TAG}"
       - name: experiment_config
-        value: "/usr/local/lib/python3.11/site-packages/core_runtime/argo/argo.json"
+        value: "/usr/local/lib/python3.11/site-packages/core_runtime/argo/bt_config_argo.json"
       - name: scratch_root
         value: "/mnt/scratch"

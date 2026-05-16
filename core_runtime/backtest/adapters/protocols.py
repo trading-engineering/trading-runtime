@@ -74,6 +74,23 @@ class AccountSnapshotSource(Protocol):
         """Return (state_values, orders) from current snapshot boundary."""
 
 
+class VenueAdapter(
+    VenueEventWaiter,
+    VenueClock,
+    MarketInputSource,
+    OrderSnapshotSource,
+    Protocol,
+):
+    """Composite runtime venue adapter contract for strategy runner."""
+
+    def record(self, recorder: Any) -> bool:
+        """Persist current simulation state.
+
+        Returns:
+            True when recorder capacity is exhausted and no record was written.
+        """
+
+
 class OrderSubmissionGateway(Protocol):
     """Outbound order command submission capability.
 

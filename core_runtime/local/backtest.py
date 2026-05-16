@@ -11,7 +11,6 @@ if TYPE_CHECKING:
     from core_runtime.backtest.engine.engine_base import BacktestResult
 
 from tradingchassis_core.core.risk.risk_config import RiskConfig
-from tradingchassis_core.strategies.strategy_config import StrategyConfig
 
 from core_runtime.backtest.engine.hft_engine import (
     HftBacktestConfig,
@@ -21,6 +20,7 @@ from core_runtime.backtest.engine.hft_engine import (
 from core_runtime.backtest.runtime.core_configuration_mapper import (
     build_core_configuration_from_run_config,
 )
+from core_runtime.backtest.strategy_api import StrategyConfig
 
 
 def load_config(path: str) -> HftBacktestConfig:
@@ -38,7 +38,7 @@ def load_config(path: str) -> HftBacktestConfig:
         ) from exc
 
     engine_cfg = HftEngineConfig(**engine_raw)
-    strategy_cfg = StrategyConfig(**strategy_raw)
+    strategy_cfg = StrategyConfig.from_mapping(strategy_raw)
     risk_cfg = RiskConfig(**risk_raw)
     core_cfg = build_core_configuration_from_run_config(raw_json)
 
